@@ -1,13 +1,11 @@
 <template>
   <div class="home-view">
-    <!-- 本地筛选栏已移除，功能已移至 Layout 的 Header 中 -->
-
     <div class="page-header">
         <h2 class="page-title">{{ currentTypeName }}列表</h2>
         <span style="font-size: 0.875rem; color: #666;">共找到 {{ filteredProducts.length }} 件宝物</span>
     </div>
 
-    <div class="product-grid">
+    <div v-if="filteredProducts.length > 0" class="product-grid">
         <div v-for="item in filteredProducts" :key="item.id" class="product-card group" @click="$router.push(`/product/${item.id}`)">
             <div class="card-image-wrapper">
                 <img :src="item.image" :alt="item.name" class="card-image">
@@ -28,23 +26,30 @@
             </div>
         </div>
     </div>
+    <div v-else style="padding: 4rem; text-align: center; color: #666;">
+        <i class="fa fa-spinner fa-spin" style="font-size: 2rem; margin-bottom: 1rem;"></i>
+        <p>正在读取商品数据...</p>
+    </div>
   </div>
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { computed, onMounted } from 'vue'
 import { useShopStore } from '@/stores/shopStore'
 
 const store = useShopStore()
 
-// 这里仍然需要定义类型列表以计算标题名称，或者也可以放入 store 中
+// [新增] 页面加载时获取数据
+onMounted(() => {
+    store.fetchProducts()
+})
+
 const productTypes = [
     { id: 'all', name: '全部' }, { id: 'stand', name: '立牌' },
     { id: 'card', name: '卡贴' }, { id: 'fan', name: '折扇/团扇' },
     { id: 'paper', name: '色纸' }
 ]
 
-// 使用 store 中的全局状态进行筛选
 const filteredProducts = computed(() => {
     const currentType = store.state.currentType
     if (currentType === 'all') return store.state.products

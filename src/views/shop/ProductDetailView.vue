@@ -18,17 +18,20 @@
                     <div class="price-box">
                         <span style="font-size: 0.875rem; color: var(--primary-color);">应援价</span>
                         <span class="price-current">¥{{ product.price }}</span>
-                        <span class="price-original">¥{{ (product.price * 1.3).toFixed(0) }}</span>
-                        <span class="tag-stock">现货发售</span>
+                        <span class="tag-stock">现货</span>
                     </div>
+                    <!-- [修改] 动态渲染参数表 -->
                     <div style="margin-bottom: 2rem;">
                         <h3 style="font-size: 0.875rem; color: #999; margin-bottom: 0.75rem; text-transform: uppercase;">规格参数</h3>
-                        <table class="specs-table">
-                            <tr><td>材质</td><td>进口高透亚克力 (PMMA)</td></tr>
-                            <tr><td>高度</td><td>约 15.5 cm</td></tr>
-                            <tr><td>工艺</td><td>柯式印刷 + 局部烫金</td></tr>
-                            <tr><td>出品</td><td>北高文艺部 / SOS团</td></tr>
+                        <table class="specs-table" v-if="product.specs && product.specs.length">
+                            <tbody>
+                                <tr v-for="(spec, idx) in product.specs" :key="idx">
+                                    <td>{{ spec.key }}</td>
+                                    <td>{{ spec.val }}</td>
+                                </tr>
+                            </tbody>
                         </table>
+                        <p v-else style="font-size: 0.8rem; color: #ccc;">暂无规格参数</p>
                     </div>
                 </div>
                 <div>
@@ -39,8 +42,13 @@
                             <input type="number" v-model="quantity" class="qty-input" readonly>
                             <button @click="quantity++" class="qty-btn">+</button>
                         </div>
-                        <span style="font-size: 0.75rem; color: #999;">库存紧张 ({{ product.stock }}件)</span>
+                        <span style="font-size: 0.75rem; color: #999;">库存 ({{ product.stock }}件)</span>
                     </div>
+                    
+                    <div v-if="product.shippingCost > 0" style="margin-bottom: 1rem; font-size: 0.75rem; color: #666;">
+                        <i class="fa fa-truck"></i> 基础运费: ¥{{ product.shippingCost }} (同组取最大)
+                    </div>
+
                     <div class="action-row">
                         <button class="market-btn primary action-btn-group" style="padding: 0.75rem;" @click="buyNow">
                             <i class="fa fa-shopping-bag mr-2"></i> 立即购买
@@ -57,18 +65,19 @@
     <div class="content-card">
         <div class="tabs-header">
             <div class="tab-item active">商品详情</div>
-            <div class="tab-item">评价 (99+)</div>
+            <div class="tab-item">评价 (0)</div>
             <div class="tab-item">售后说明</div>
         </div>
         <div class="tab-content">
-            <div class="detail-text">
-                <p style="margin-bottom: 1rem;">“我对普通的人类没有兴趣。你们之中要是有外星人、未来人、异世界人或者超能力者的话，就尽管来找我吧！以上。”</p>
-                <p>还原动画经典名场面，SOS团团长凉宫春日霸气登场。<br>无论是摆在办公桌还是书架，都能感受到满满的元气与不可思议的力量。</p>
+            <!-- [修改] 渲染详情文案和详情图 -->
+            <div class="detail-text" v-if="product.detailText">
+                <p style="white-space: pre-wrap;">{{ product.detailText }}</p>
             </div>
             <div class="detail-images">
-                    <img src="https://placehold.co/800x400/3498db/white?text=Detail+Banner+1" alt="详情">
-                    <img src="https://placehold.co/800x1000/ecf0f1/333?text=Close+Up+Face+Detail" alt="详情">
-                    <img src="https://placehold.co/800x600/2c3e50/white?text=Packaging+Display" alt="详情">
+                <img v-for="(img, idx) in product.detailImages" :key="idx" :src="img" alt="详情图">
+            </div>
+            <div v-if="!product.detailText && (!product.detailImages || product.detailImages.length===0)" style="text-align:center; color:#ccc; padding: 2rem;">
+                暂无图文详情
             </div>
         </div>
     </div>
@@ -76,7 +85,7 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useShopStore } from '@/stores/shopStore'
 
@@ -85,10 +94,15 @@ const router = useRouter()
 const store = useShopStore()
 const quantity = ref(1)
 
+// 确保进入详情页时有数据
+onMounted(() => {
+    if (store.state.products.length === 0) store.fetchProducts()
+})
+
 const product = computed(() => store.state.products.find(p => p.id == route.params.id))
 
 const addToCart = () => {
-    store.addToCart(product.value, quantity.value)
+    if(product.value) store.addToCart(product.value, quantity.value)
 }
 
 const buyNow = () => {

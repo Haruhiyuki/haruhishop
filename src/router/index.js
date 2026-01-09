@@ -28,6 +28,7 @@ const router = createRouter({
         { path: '', redirect: '/admin/dashboard' },
         { path: 'dashboard', name: 'admin-dashboard', component: () => import('../views/admin/DashboardView.vue') },
         { path: 'orders', name: 'admin-orders', component: () => import('../views/admin/OrdersView.vue') },
+        { path: 'products', name: 'admin-products', component: () => import('../views/admin/ProductsView.vue') }, // 新增路由
         { path: 'stats', name: 'admin-stats', component: () => import('../views/admin/StatsView.vue') }
       ]
     }

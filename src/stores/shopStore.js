@@ -1,47 +1,42 @@
 import { reactive, computed } from 'vue'
 
-// 简单的全局状态管理
+// 使用 Vite 代理路径
+const API_URL = '/api/products'
+const ORDER_URL = '/api/orders'
+const UPLOAD_URL = '/api/upload'
+
 const state = reactive({
     cart: [],
-    // 添加全局筛选状态
-    currentType: 'all', 
-    products: [
-        { id: 1, name: '团长大人挥斥方遒立牌', price: 45, category: '立牌', typeId: 'stand', stock: 120, image: 'https://placehold.co/400x500/2c3e50/white?text=Haruhi+Stand', desc: '经典校服造型，亚克力双面高清印刷。' },
-        { id: 2, name: '长门有希读书中·色纸', price: 25, category: '色纸', typeId: 'paper', stock: 50, image: 'https://placehold.co/400x500/5e3c58/white?text=Yuki+Paper', desc: '金边签名版，精选特种纸。' },
-        { id: 3, name: '朝比奈学姐女仆装卡贴', price: 5, category: '卡贴', typeId: 'card', stock: 300, image: 'https://placehold.co/400x500/e74c3c/white?text=Mikuru+Card', desc: 'PET磨砂材质，防水防刮。' },
-        { id: 4, name: 'SOS团专属折扇', price: 35, category: '折扇', typeId: 'fan', stock: 20, image: 'https://placehold.co/400x500/3498db/white?text=SOS+Fan', desc: '10寸绢布扇面，竹制扇骨。' },
-        { id: 5, name: '阿虚吐槽专用立牌', price: 40, category: '立牌', typeId: 'stand', stock: 99, image: 'https://placehold.co/400x500/95a5a6/white?text=Kyon+Stand', desc: '放在桌面上仿佛能听到他的叹气声。' },
-        { id: 6, name: '古泉一树超能力特效立牌', price: 48, category: '立牌', typeId: 'stand', stock: 45, image: 'https://placehold.co/400x500/e67e22/white?text=Koizumi+Stand', desc: '背景带有闭锁空间特效件。' },
-    ],
+    currentType: 'all',
+    products: [], 
     currentOrder: null,
-    notification: null
+    notification: null,
+    adminOrders: [] // 确保后台订单列表状态存在
 })
 
 export const useShopStore = () => {
+    // --- 计算属性 ---
     const cartCount = computed(() => state.cart.reduce((acc, item) => acc + item.quantity, 0))
     const cartTotal = computed(() => state.cart.reduce((acc, item) => acc + item.price * item.quantity, 0))
-    const shippingFee = computed(() => cartTotal.value >= 200 ? 0 : 10)
+    
+    // 运费计算：按标签分组取最大值后累加
+    const shippingFee = computed(() => {
+        if (state.cart.length === 0) return 0
+        const groups = {}
+        state.cart.forEach(item => {
+            const tag = item.shippingTag || 'default'
+            const cost = item.shippingCost || 0
+            if (groups[tag] === undefined) groups[tag] = cost
+            else if (cost > groups[tag]) groups[tag] = cost
+        })
+        return Object.values(groups).reduce((sum, val) => sum + val, 0)
+    })
+
     const finalTotal = computed(() => cartTotal.value + shippingFee.value)
 
-    // 设置商品类型动作
-    const setProductType = (type) => {
-        state.currentType = type
-    }
+    const setProductType = (type) => { state.currentType = type }
 
-    const addToCart = (product, qty = 1) => {
-        const existingItem = state.cart.find(item => item.id === product.id)
-        if (existingItem) {
-            existingItem.quantity += qty
-        } else {
-            state.cart.push({ ...product, quantity: qty })
-        }
-        showNotification(`已将 ${product.name} 加入购物车`)
-    }
-
-    const removeFromCart = (index) => state.cart.splice(index, 1)
-    
-    const clearCart = () => state.cart = []
-
+    // --- 通用方法 ---
     const showNotification = (msg) => {
         state.notification = msg
         setTimeout(() => state.notification = null, 3000)
@@ -49,17 +44,109 @@ export const useShopStore = () => {
 
     const setOrder = (order) => state.currentOrder = order
 
+    // --- 商品 API ---
+    const fetchProducts = async () => {
+        try {
+            const res = await fetch(API_URL)
+            const data = await res.json()
+            state.products = data
+        } catch (err) { console.error(err) }
+    }
+
+    const uploadImage = async (file) => {
+        const formData = new FormData()
+        formData.append('file', file)
+        try {
+            const res = await fetch(UPLOAD_URL, { method: 'POST', body: formData })
+            if (res.ok) {
+                const data = await res.json()
+                return data.url
+            }
+        } catch (e) { 
+            showNotification('图片上传失败')
+            return null 
+        }
+    }
+
+    const addProduct = async (product) => {
+        try {
+            const res = await fetch(API_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(product) })
+            if (res.ok) { await fetchProducts(); showNotification('商品添加成功'); return true }
+        } catch(e) { showNotification('添加失败'); }
+        return false
+    }
+
+    const updateProduct = async (id, product) => {
+        try {
+            const res = await fetch(`${API_URL}/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(product) })
+            if (res.ok) { await fetchProducts(); showNotification('商品更新成功'); return true }
+        } catch(e) { showNotification('更新失败'); }
+        return false
+    }
+
+    const deleteProduct = async (id) => {
+        if (!confirm('确定删除?')) return
+        try {
+            await fetch(`${API_URL}/${id}`, { method: 'DELETE' })
+            await fetchProducts()
+            showNotification('已删除')
+        } catch(e) { showNotification('删除失败'); }
+    }
+
+    // --- 购物车逻辑 ---
+    const addToCart = (product, qty = 1) => {
+        const existingItem = state.cart.find(item => item.id === product.id)
+        if (existingItem) { existingItem.quantity += qty } 
+        else { state.cart.push({ ...product, quantity: qty, shippingTag: product.shippingTag, shippingCost: product.shippingCost }) }
+        showNotification('已加入购物车')
+    }
+
+    const removeFromCart = (index) => state.cart.splice(index, 1)
+    const clearCart = () => state.cart = []
+
+    // --- 订单 API (前台 & 后台) ---
+    
+    // 前台：创建订单
+    const createOrderBackend = async (orderData) => {
+        try {
+            const res = await fetch(ORDER_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(orderData) })
+            const data = await res.json()
+            if (!res.ok) throw new Error(data.error || '创建订单失败')
+            return true
+        } catch (e) {
+            showNotification(e.message)
+            return false
+        }
+    }
+
+    // 后台：获取订单列表
+    const fetchAdminOrders = async (status = 'all') => {
+        try {
+            const res = await fetch(`${ORDER_URL}?status=${status}`)
+            if (res.ok) {
+                state.adminOrders = await res.json()
+            }
+        } catch (e) { console.error("Fetch orders failed", e) }
+    }
+
+    // 后台：更新订单状态
+    const updateOrderStatus = async (id, status, tracking = {}) => {
+        try {
+            const payload = { status, ...tracking }
+            const res = await fetch(`${ORDER_URL}/${id}/status`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+            if (res.ok) {
+                await fetchAdminOrders() // 刷新列表
+                showNotification('订单状态已更新')
+            } else {
+                showNotification('状态更新失败')
+            }
+        } catch (e) { showNotification('网络错误') }
+    }
+
     return {
-        state,
-        cartCount,
-        cartTotal,
-        shippingFee,
-        finalTotal,
-        setProductType, // 导出新方法
-        addToCart,
-        removeFromCart,
-        clearCart,
-        showNotification,
-        setOrder
+        state, cartCount, cartTotal, shippingFee, finalTotal,
+        setProductType, addToCart, removeFromCart, clearCart, showNotification, setOrder,
+        fetchProducts, addProduct, updateProduct, deleteProduct, uploadImage, 
+        createOrderBackend, fetchAdminOrders, updateOrderStatus
     }
 }

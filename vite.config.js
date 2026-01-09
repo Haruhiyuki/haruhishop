@@ -9,11 +9,19 @@ export default defineConfig({
       '@': fileURLToPath(new URL('./src', import.meta.url))
     }
   },
-  //在此处添加 server 配置
   server: {
-    port: 15532,      // 将端口修改为你想要的数字，例如 8080
-    strictPort: false, // 如果端口被占用，是否直接退出（false 为自动尝试下一个可用端口）
-    open: true,      // 启动时自动打开浏览器
-    host: true       // 监听所有地址，方便局域网手机测试
+    port: 15532,      // [建议] 前端运行在 5173，避开后端的 3000
+    strictPort: false,
+    open: true,
+    host: true,
+    // [新增] 代理配置
+    proxy: {
+      '/api': {
+        target: 'http://localhost:4542', // 后端服务地址
+        changeOrigin: true,              // 允许跨域（修改 Host 头）
+        secure: false                    // 如果是 https 且有自签名证书，设为 false
+        // rewrite: (path) => path.replace(/^\/api/, '') // 如果后端路由没有 /api 前缀，可以开启这行重写
+      }
+    }
   }
 })
