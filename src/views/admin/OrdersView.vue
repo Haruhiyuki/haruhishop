@@ -70,12 +70,11 @@
     <div v-if="shipModal.show" class="modal-overlay">
         <div class="modal-card">
             <h3 class="modal-title">订单发货</h3>
-            <label class="form-label">快递公司</label>
-            <select v-model="shipModal.company" class="form-select">
-                <option>中通快递</option><option>顺丰速运</option><option>圆通速递</option>
-            </select>
-            <label class="form-label">快递单号</label>
-            <input v-model="shipModal.no" type="text" class="form-input">
+            <label class="form-label">快递单号 (选填，可自动识别快递公司)</label>
+            <input v-model="shipModal.no" type="text" class="form-input" placeholder="留空则不回填运单号">
+            <div v-if="detectedCompany" style="margin-top: 0.5rem; font-size: 0.85rem; color: #047857;">
+                <i class="fa fa-check-circle"></i> 识别为: {{ detectedCompany }}
+            </div>
             <div class="modal-actions">
                 <button @click="shipModal.show = false" class="admin-btn btn-outline">取消</button>
                 <button @click="confirmShip" class="admin-btn btn-blue">确认发货</button>
@@ -111,14 +110,36 @@ const updateStatus = async (id, status) => {
     await store.updateOrderStatus(id, status)
 }
 
-const shipModal = reactive({ show: false, id: null, company: '中通快递', no: '' })
+const shipModal = reactive({ show: false, id: null, no: '' })
 const openShip = (order) => {
+    shipModal.no = ''
     shipModal.id = order.id
     shipModal.show = true
 }
+
+const detectCompany = (no) => {
+    if (!no) return ''
+    const n = no.trim().toUpperCase()
+    if (n.startsWith('SF')) return '顺丰速运'
+    if (n.startsWith('YT')) return '圆通速递'
+    if (n.startsWith('JT')) return '极兔速递'
+    if (n.startsWith('JD')) return '京东快递'
+    if (/^E[A-Z]\d/.test(n)) return 'EMS'
+    if (/^46\d/.test(n)) return '韵达快递'
+    if (/^77\d/.test(n)) return '申通快递'
+    if (/^7[56]\d/.test(n)) return '中通快递'
+    if (/^(268|368|468|568)\d/.test(n)) return '申通快递'
+    if (/^(31|32|33|34)\d/.test(n)) return '韵达快递'
+    if (/^(70|56)\d/.test(n)) return '百世快递'
+    return '未知快递'
+}
+
+const detectedCompany = computed(() => detectCompany(shipModal.no))
+
 const confirmShip = async () => {
-    if(!shipModal.no) return alert('请输入单号')
-    await store.updateOrderStatus(shipModal.id, 3, { trackingCompany: shipModal.company, trackingNo: shipModal.no })
+    const no = shipModal.no.trim()
+    const tracking = no ? { trackingCompany: detectCompany(no), trackingNo: no } : {}
+    await store.updateOrderStatus(shipModal.id, 3, tracking)
     shipModal.show = false
 }
 </script>

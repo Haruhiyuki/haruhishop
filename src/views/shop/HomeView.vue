@@ -44,17 +44,11 @@ onMounted(() => {
     store.fetchProducts()
 })
 
-const productTypes = [
-    { id: 'all', name: '全部' }, { id: 'stand', name: '立牌' },
-    { id: 'card', name: '卡贴' }, { id: 'fan', name: '折扇/团扇' },
-    { id: 'paper', name: '色纸' }
-]
-
 const filteredProducts = computed(() => {
     const currentType = store.state.currentType
     if (currentType === 'all') return store.state.products
-    return store.state.products.filter(p => p.typeId === currentType || (currentType === 'fan' && (p.typeId === 'fan' || p.category.includes('扇'))))
+    return store.state.products.filter(p => p.category === currentType)
 })
 
-const currentTypeName = computed(() => productTypes.find(t => t.id === store.state.currentType)?.name || '全部')
+const currentTypeName = computed(() => store.state.currentType === 'all' ? '全部' : store.state.currentType)
 </script>

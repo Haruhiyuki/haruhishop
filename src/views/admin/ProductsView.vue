@@ -38,12 +38,14 @@
                 
                 <!-- 第一行：基础信息 -->
                 <div><label class="form-label">名称</label><input v-model="form.name" class="form-input"></div>
-                <div><label class="form-label">分类名</label><input v-model="form.category" class="form-input"></div>
+                <div><label class="form-label">分类名</label><input v-model="form.category" class="form-input" placeholder="如: 立牌、卡贴、折扇"></div>
                 <div>
-                    <label class="form-label">类型ID</label>
-                    <select v-model="form.typeId" class="form-select">
-                        <option value="stand">stand</option><option value="card">card</option>
-                        <option value="fan">fan</option><option value="paper">paper</option>
+                    <label class="form-label">发货标签 (分组)</label>
+                    <select v-model="form.shippingTag" class="form-select">
+                        <option value="深圳">深圳</option>
+                        <option value="上海">上海</option>
+                        <option value="柔造">柔造</option>
+                        <option value="蚌埠">蚌埠</option>
                     </select>
                 </div>
 
@@ -51,8 +53,7 @@
                 <div><label class="form-label">价格 (¥)</label><input v-model.number="form.price" class="form-input" type="number"></div>
                 <div><label class="form-label">库存</label><input v-model.number="form.stock" class="form-input" type="number"></div>
                 
-                <!-- 第三行：运费策略 -->
-                <div><label class="form-label">发货标签 (分组)</label><input v-model="form.shippingTag" class="form-input" placeholder="如: warehouse_a"></div>
+                <!-- 第三行：运费 -->
                 <div><label class="form-label">单品运费 (¥)</label><input v-model.number="form.shippingCost" class="form-input" type="number"></div>
 
                 <!-- 第四行：主图上传 -->
@@ -119,11 +120,11 @@ const showModal = ref(false)
 const isEdit = ref(false)
 
 // 表单初始状态
-const initialForm = { 
-    id: null, name: '', price: 0, category: '', typeId: 'stand', stock: 100, 
-    image: '', desc: '', 
+const initialForm = {
+    id: null, name: '', price: 0, category: '', stock: 100,
+    image: '', desc: '',
     specs: [], detailText: '', detailImages: [],
-    shippingTag: 'default', shippingCost: 0
+    shippingTag: '深圳', shippingCost: 0
 }
 
 const form = reactive({ ...initialForm })

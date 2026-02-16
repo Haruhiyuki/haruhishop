@@ -4,10 +4,10 @@ const bodyParser = require('body-parser');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
-const db = require('./db');
+const db = require('./db.cjs');
 
 const app = express();
-const PORT = 4542;
+const PORT = 13221;
 
 const uploadDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir);
@@ -52,8 +52,8 @@ app.post('/api/upload', upload.single('file'), (req, res) => {
 app.post('/api/products', (req, res) => {
     const { name, price, category, typeId, stock, image, desc, specs, detailText, detailImages, shippingTag, shippingCost } = req.body;
     const sql = `INSERT INTO products (name, price, category, typeId, stock, image, desc, specs, detailText, detailImages, shippingTag, shippingCost) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
-    const params = [name, price, category, typeId, stock, image, desc, JSON.stringify(specs||[]), detailText||'', JSON.stringify(detailImages||[]), shippingTag||'default', shippingCost||0];
-    db.run(sql, params, function(err) {
+    const params = [name, price, category, typeId, stock, image, desc, JSON.stringify(specs || []), detailText || '', JSON.stringify(detailImages || []), shippingTag || 'default', shippingCost || 0];
+    db.run(sql, params, function (err) {
         if (err) return res.status(500).json({ error: err.message });
         res.json({ id: this.lastID, ...req.body });
     });
@@ -62,15 +62,15 @@ app.post('/api/products', (req, res) => {
 app.put('/api/products/:id', (req, res) => {
     const { name, price, category, typeId, stock, image, desc, specs, detailText, detailImages, shippingTag, shippingCost } = req.body;
     const sql = `UPDATE products SET name=?, price=?, category=?, typeId=?, stock=?, image=?, desc=?, specs=?, detailText=?, detailImages=?, shippingTag=?, shippingCost=? WHERE id=?`;
-    const params = [name, price, category, typeId, stock, image, desc, JSON.stringify(specs||[]), detailText||'', JSON.stringify(detailImages||[]), shippingTag||'default', shippingCost||0, req.params.id];
-    db.run(sql, params, function(err) {
+    const params = [name, price, category, typeId, stock, image, desc, JSON.stringify(specs || []), detailText || '', JSON.stringify(detailImages || []), shippingTag || 'default', shippingCost || 0, req.params.id];
+    db.run(sql, params, function (err) {
         if (err) return res.status(500).json({ error: err.message });
         res.json({ message: 'Updated', changes: this.changes });
     });
 });
 
 app.delete('/api/products/:id', (req, res) => {
-    db.run("DELETE FROM products WHERE id = ?", req.params.id, function(err) {
+    db.run("DELETE FROM products WHERE id = ?", req.params.id, function (err) {
         if (err) return res.status(500).json({ error: err.message });
         res.json({ message: 'Deleted', changes: this.changes });
     });
@@ -83,7 +83,7 @@ app.get('/api/orders', (req, res) => {
     const status = req.query.status;
     let sql = "SELECT * FROM orders ORDER BY created_at DESC";
     let params = [];
-    
+
     if (status && status !== 'all') {
         sql = "SELECT * FROM orders WHERE status = ? ORDER BY created_at DESC";
         params = [status];
@@ -111,7 +111,7 @@ app.get('/api/orders', (req, res) => {
 // 2. 创建订单 (锁库存)
 app.post('/api/orders', (req, res) => {
     const { id, items, contact, total } = req.body;
-    
+
     // 检查库存
     const checkStockPromises = items.map(item => {
         return new Promise((resolve, reject) => {
@@ -131,18 +131,18 @@ app.post('/api/orders', (req, res) => {
             });
 
             // 插入订单 (展开地址信息)
-            const sql = `INSERT INTO orders 
-                (id, total, items, contactName, contactPhone, contactEmail, province, city, district, addressDetail, status) 
+            const sql = `INSERT INTO orders
+                (id, total, items, contactName, contactPhone, contactEmail, province, city, district, addressDetail, status)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
-            
+
             const params = [
                 id, total, JSON.stringify(items),
                 contact.name, contact.phone, contact.email,
-                contact.province, contact.city, contact.district, contact.address, 
+                contact.province, contact.city, contact.district, contact.address,
                 1 // 状态1: 待付款
             ];
 
-            db.run(sql, params, function(err) {
+            db.run(sql, params, function (err) {
                 if (err) {
                     console.error(err);
                     return res.status(500).json({ error: 'Order creation failed' });
@@ -155,7 +155,28 @@ app.post('/api/orders', (req, res) => {
         });
 });
 
-// 3. 更新订单状态 (包含库存回滚逻辑)
+// 3. 按订单号查询单个订单 (前台用)
+app.get('/api/orders/:id', (req, res) => {
+    db.get("SELECT * FROM orders WHERE id = ?", [req.params.id], (err, order) => {
+        if (err) return res.status(500).json({ error: err.message });
+        if (!order) return res.status(404).json({ error: '订单不存在' });
+        res.json({
+            ...order,
+            items: safeParse(order.items, []),
+            contact: {
+                name: order.contactName,
+                phone: order.contactPhone,
+                email: order.contactEmail,
+                province: order.province,
+                city: order.city,
+                district: order.district,
+                addressDetail: order.addressDetail
+            }
+        });
+    });
+});
+
+// 4. 更新订单状态 (包含库存回滚逻辑)
 app.put('/api/orders/:id/status', (req, res) => {
     const { status, trackingCompany, trackingNo } = req.body; // status: 0=取消, 2=已支付, 3=已发货
     const orderId = req.params.id;
@@ -187,7 +208,7 @@ app.put('/api/orders/:id/status', (req, res) => {
         sql += " WHERE id = ?";
         params.push(orderId);
 
-        db.run(sql, params, function(err) {
+        db.run(sql, params, function (err) {
             if (err) return res.status(500).json({ error: err.message });
             res.json({ success: true, status: status });
         });

@@ -5,8 +5,16 @@
     <p style="color: #4b5563; margin-bottom: 0.5rem;">感谢您对应援团的支持！</p>
     <p style="font-size: 0.875rem; color: #6b7280; margin-bottom: 2rem;">管理员正在核对账单中，确认无误后将通过短信通知您并发货。</p>
     <div class="flex-row justify-center gap-4" style="justify-content: center;">
-        <button class="market-btn primary-action" @click="$router.push('/query')">查看订单详情</button>
+        <button class="market-btn primary-action" @click="$router.push({ path: '/query', query: { id: orderId } })">查看订单详情</button>
         <button class="market-btn btn-ghost" @click="$router.push('/')">返回首页</button>
     </div>
   </div>
 </template>
+
+<script setup>
+import { computed } from 'vue'
+import { useShopStore } from '@/stores/shopStore'
+
+const store = useShopStore()
+const orderId = computed(() => store.state.currentOrder?.id || '')
+</script>

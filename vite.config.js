@@ -17,7 +17,7 @@ export default defineConfig({
     // [新增] 代理配置
     proxy: {
       '/api': {
-        target: 'http://localhost:4542', // 后端服务地址
+        target: 'http://localhost:13221', // 后端服务地址
         changeOrigin: true,              // 允许跨域（修改 Host 头）
         secure: false                    // 如果是 https 且有自签名证书，设为 false
         // rewrite: (path) => path.replace(/^\/api/, '') // 如果后端路由没有 /api 前缀，可以开启这行重写

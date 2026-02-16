@@ -113,14 +113,11 @@ const isHomePage = computed(() => route.name === 'home')
 const isDetailPage = computed(() => route.name === 'product')
 const currentType = computed(() => state.currentType)
 
-// 定义筛选类型，用于在 Header 渲染
-const productTypes = [
-    { id: 'all', name: '全部' }, 
-    { id: 'stand', name: '立牌' },
-    { id: 'card', name: '卡贴' }, 
-    { id: 'fan', name: '折扇/团扇' },
-    { id: 'paper', name: '色纸' }
-]
+// 动态生成筛选列表：从商品数据中提取去重分类
+const productTypes = computed(() => {
+    const categories = [...new Set(state.products.map(p => p.category).filter(Boolean))]
+    return [{ id: 'all', name: '全部' }, ...categories.map(c => ({ id: c, name: c }))]
+})
 
 const setType = (t) => {
     setProductType(t)
