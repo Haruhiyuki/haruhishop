@@ -62,6 +62,58 @@ const normalizeSiteConfig = (rawConfig = {}) => {
     return next
 }
 
+const getFileBaseName = (filename = '') => String(filename).replace(/\.[^/.]+$/, '') || 'image'
+
+const renameFileToWebp = (file) => {
+    if (!(file instanceof File)) return file
+    if (String(file.name || '').toLowerCase().endsWith('.webp')) return file
+    return new File([file], `${getFileBaseName(file.name)}.webp`, {
+        type: 'image/webp',
+        lastModified: file.lastModified || Date.now()
+    })
+}
+
+const convertImageFileToWebp = async (file) => {
+    if (!(file instanceof File)) return null
+    if (!String(file.type || '').startsWith('image/')) return null
+    if (String(file.type) === 'image/webp') return renameFileToWebp(file)
+
+    const objectUrl = URL.createObjectURL(file)
+    try {
+        const image = await new Promise((resolve, reject) => {
+            const img = new Image()
+            img.onload = () => resolve(img)
+            img.onerror = () => reject(new Error('图片解码失败'))
+            img.src = objectUrl
+        })
+
+        const width = Number(image.naturalWidth || image.width || 0)
+        const height = Number(image.naturalHeight || image.height || 0)
+        if (!width || !height) throw new Error('无效图片尺寸')
+
+        const canvas = document.createElement('canvas')
+        canvas.width = width
+        canvas.height = height
+        const ctx = canvas.getContext('2d')
+        if (!ctx) throw new Error('画布初始化失败')
+        ctx.drawImage(image, 0, 0, width, height)
+
+        const blob = await new Promise((resolve) => {
+            canvas.toBlob((value) => resolve(value), 'image/webp', 0.9)
+        })
+        if (!blob) throw new Error('WebP 编码失败')
+
+        return new File([blob], `${getFileBaseName(file.name)}.webp`, {
+            type: 'image/webp',
+            lastModified: Date.now()
+        })
+    } catch {
+        return null
+    } finally {
+        URL.revokeObjectURL(objectUrl)
+    }
+}
+
 const state = reactive({
     cart: [],
     currentType: 'all',
@@ -474,10 +526,24 @@ export const useShopStore = () => {
         }
     }
 
-    const uploadImage = async (file) => {
+    const uploadImage = async (file, options = {}) => {
         if (!ensureAdminAuth()) return null
+        const purpose = options?.purpose === 'qr' ? 'qr' : 'general'
+        const shouldConvertToWebp = options?.convertToWebp ?? purpose !== 'qr'
+
+        let uploadFile = file
+        if (shouldConvertToWebp) {
+            uploadFile = await convertImageFileToWebp(file)
+            if (!uploadFile) {
+                showNotification('图片转 WebP 失败，请更换图片后重试')
+                return null
+            }
+            uploadFile = renameFileToWebp(uploadFile)
+        }
+
         const formData = new FormData()
-        formData.append('file', file)
+        formData.append('file', uploadFile)
+        formData.append('purpose', purpose)
         try {
             const res = await fetch(UPLOAD_URL, {
                 method: 'POST',
@@ -488,10 +554,10 @@ export const useShopStore = () => {
                 handleAdminUnauthorized()
                 return null
             }
-            if (res.ok) {
-                const data = await res.json()
-                return data.url
-            }
+            const data = await res.json().catch(() => ({}))
+            if (res.ok) return data.url
+            showNotification(data.error || '图片上传失败')
+            return null
         } catch (e) { 
             showNotification('图片上传失败')
             return null 

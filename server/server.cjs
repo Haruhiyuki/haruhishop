@@ -1077,6 +1077,44 @@ app.get(apiPath('/products'), (req, res) => {
 
 app.post(apiPath('/upload'), requireAdminAuth, upload.single('file'), (req, res) => {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+
+    const purpose = String(req.body?.purpose || '').trim().toLowerCase() === 'qr' ? 'qr' : 'general';
+    const mimeType = String(req.file.mimetype || '').toLowerCase();
+    const isImage = mimeType.startsWith('image/');
+    const removeUploadedFile = () => {
+        try {
+            if (req.file?.path && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+        } catch (_) {
+            // ignore cleanup errors
+        }
+    };
+
+    if (!isImage) {
+        removeUploadedFile();
+        return res.status(400).json({ error: '仅支持图片文件' });
+    }
+
+    if (purpose !== 'qr' && mimeType !== 'image/webp') {
+        removeUploadedFile();
+        return res.status(400).json({ error: '非二维码图片仅支持 WebP 上传' });
+    }
+
+    if (purpose !== 'qr') {
+        const ext = path.extname(req.file.filename).toLowerCase();
+        if (ext !== '.webp') {
+            const webpFilename = `${path.basename(req.file.filename, ext)}.webp`;
+            const webpPath = path.join(uploadDir, webpFilename);
+            try {
+                fs.renameSync(req.file.path, webpPath);
+                req.file.filename = webpFilename;
+                req.file.path = webpPath;
+            } catch (err) {
+                removeUploadedFile();
+                return res.status(500).json({ error: 'WebP 文件保存失败' });
+            }
+        }
+    }
+
     res.json({ url: `${apiPath('/uploads')}/${req.file.filename}` });
 });
 

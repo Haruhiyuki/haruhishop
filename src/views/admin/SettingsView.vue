@@ -73,7 +73,10 @@ const applyConfigToForm = (config) => {
 const uploadQr = async (event, key) => {
   const file = event.target.files?.[0]
   if (!file) return
-  const imageUrl = await store.uploadImage(file)
+  const imageUrl = await store.uploadImage(file, {
+    purpose: 'qr',
+    convertToWebp: false
+  })
   if (imageUrl) {
     form.payment[key] = imageUrl
   }
