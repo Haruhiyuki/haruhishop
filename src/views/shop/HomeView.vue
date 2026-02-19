@@ -16,7 +16,10 @@
             <div class="card-body">
                 <div class="card-title-row">
                     <h3 class="card-title">{{ item.name }}</h3>
-                    <span class="card-price">¥{{ item.price }}</span>
+                    <div class="card-price-wrap">
+                        <span class="card-price">¥{{ getDisplayPrice(item) }}</span>
+                        <span v-if="hasDiscount(item)" class="card-price-original">¥{{ item.price }}</span>
+                    </div>
                 </div>
                 <p class="card-desc">{{ item.desc }}</p>
                 <div class="card-footer">
@@ -51,4 +54,7 @@ const filteredProducts = computed(() => {
 })
 
 const currentTypeName = computed(() => store.state.currentType === 'all' ? '全部' : store.state.currentType)
+
+const hasDiscount = (item) => store.hasProductDiscount(item)
+const getDisplayPrice = (item) => store.resolveProductPrice(item)
 </script>

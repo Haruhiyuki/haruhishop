@@ -8,11 +8,27 @@
                 {{ status.label }}
             </button>
         </div>
+        <div class="toolbar-actions">
+            <span class="text-sub">已选 {{ selectedCount }} 单</span>
+            <button class="admin-btn btn-outline" :disabled="selectedCount === 0" @click="clearSelection">清空选择</button>
+            <button class="admin-btn btn-green" :disabled="selectedCount === 0" @click="exportSelectedOrders">
+                <i class="fa fa-download"></i> 导出所选
+            </button>
+        </div>
     </div>
     <div class="table-container">
         <table class="data-table">
             <thead>
                 <tr>
+                    <th class="checkbox-cell">
+                        <input
+                            ref="selectAllRef"
+                            type="checkbox"
+                            :checked="allSelected"
+                            :disabled="orders.length === 0"
+                            @change="toggleSelectAll($event.target.checked)"
+                        >
+                    </th>
                     <th>订单号 / 时间</th>
                     <th>商品概览</th>
                     <th>收货信息</th>
@@ -23,6 +39,13 @@
             </thead>
             <tbody>
                 <tr v-for="order in orders" :key="order.id">
+                    <td class="checkbox-cell">
+                        <input
+                            type="checkbox"
+                            :checked="isOrderSelected(order.id)"
+                            @change="toggleSelectOrder(order.id, $event.target.checked)"
+                        >
+                    </td>
                     <td>
                         <div class="order-id">{{ order.id }}</div>
                         <div class="text-sub">{{ new Date(order.created_at).toLocaleString() }}</div>
@@ -85,17 +108,52 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, reactive } from 'vue'
+import { ref, computed, onMounted, reactive, watch } from 'vue'
 import { useShopStore } from '@/stores/shopStore'
 
 const store = useShopStore()
 const filterStatus = ref('all')
 const orders = computed(() => store.state.adminOrders)
+const selectedOrderIds = ref(new Set())
+const selectAllRef = ref(null)
 
-const statusOptions = [{ value: 'all', label: '全部' }, { value: 1, label: '待付款' }, { value: 5, label: '待确认' }, { value: 2, label: '待发货' }, { value: 0, label: '已取消' }]
+const statusOptions = [
+    { value: 'all', label: '全部' },
+    { value: 1, label: '待付款' },
+    { value: 5, label: '待确认' },
+    { value: 2, label: '待发货' },
+    { value: 3, label: '已发货' },
+    { value: 0, label: '已取消' }
+]
+const selectedOrders = computed(() => orders.value.filter((order) => selectedOrderIds.value.has(order.id)))
+const selectedCount = computed(() => selectedOrders.value.length)
+const allSelected = computed(() => orders.value.length > 0 && selectedCount.value === orders.value.length)
+const partiallySelected = computed(() => selectedCount.value > 0 && selectedCount.value < orders.value.length)
+
+const clearSelection = () => {
+    selectedOrderIds.value = new Set()
+}
+
+const isOrderSelected = (orderId) => selectedOrderIds.value.has(orderId)
+
+const toggleSelectOrder = (orderId, checked) => {
+    const next = new Set(selectedOrderIds.value)
+    if (checked) next.add(orderId)
+    else next.delete(orderId)
+    selectedOrderIds.value = next
+}
+
+const toggleSelectAll = (checked) => {
+    if (!checked) {
+        clearSelection()
+        return
+    }
+    selectedOrderIds.value = new Set(orders.value.map((order) => order.id))
+}
 
 const changeFilter = (status) => {
     filterStatus.value = status
+    clearSelection()
     store.fetchAdminOrders(status)
 }
 
@@ -107,8 +165,23 @@ const getStatusLabel = (s) => (['已取消', '待付款', '待发货', '已发�
 
 const updateStatus = async (id, status) => {
     if (status === 0 && !confirm('取消订单将自动回滚库存，确定吗？')) return
-    await store.updateOrderStatus(id, status)
+    await store.updateOrderStatus(id, status, {}, filterStatus.value)
 }
+
+watch([orders, partiallySelected], () => {
+    if (selectAllRef.value) {
+        selectAllRef.value.indeterminate = partiallySelected.value
+    }
+}, { immediate: true })
+
+watch(orders, (currentOrders) => {
+    const visibleIds = new Set(currentOrders.map((order) => order.id))
+    const next = new Set()
+    selectedOrderIds.value.forEach((id) => {
+        if (visibleIds.has(id)) next.add(id)
+    })
+    selectedOrderIds.value = next
+})
 
 const shipModal = reactive({ show: false, id: null, no: '' })
 const openShip = (order) => {
@@ -139,7 +212,73 @@ const detectedCompany = computed(() => detectCompany(shipModal.no))
 const confirmShip = async () => {
     const no = shipModal.no.trim()
     const tracking = no ? { trackingCompany: detectCompany(no), trackingNo: no } : {}
-    await store.updateOrderStatus(shipModal.id, 3, tracking)
-    shipModal.show = false
+    const success = await store.updateOrderStatus(shipModal.id, 3, tracking, filterStatus.value)
+    if (success) shipModal.show = false
+}
+
+const toCsvCell = (value) => {
+    if (value === null || value === undefined) return ''
+    const text = String(value).replace(/"/g, '""')
+    return /[",\n]/.test(text) ? `"${text}"` : text
+}
+
+const toAddressText = (contact = {}) => `${contact.province || ''}${contact.city || ''}${contact.district || ''}${contact.addressDetail || ''}`
+const toItemsText = (items = []) => items.map((item) => `${item.name} x${item.quantity}`).join('；')
+
+const exportSelectedOrders = () => {
+    if (selectedCount.value === 0) {
+        alert('请先选择要导出的订单')
+        return
+    }
+
+    const headers = ['订单号', '下单时间', '状态', '金额', '收货人', '联系电话', '邮箱', '收货地址', '商品明细', '物流公司', '物流单号']
+    const rows = selectedOrders.value.map((order) => [
+        order.id,
+        new Date(order.created_at).toLocaleString(),
+        getStatusLabel(order.status),
+        order.total,
+        order.contact?.name || '',
+        order.contact?.phone || '',
+        order.contact?.email || '',
+        toAddressText(order.contact),
+        toItemsText(order.items),
+        order.trackingCompany || '',
+        order.trackingNo || ''
+    ])
+
+    const csv = [
+        headers.map(toCsvCell).join(','),
+        ...rows.map((row) => row.map(toCsvCell).join(','))
+    ].join('\n')
+
+    const now = new Date()
+    const stamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}-${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`
+    const blob = new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `orders-${stamp}.csv`
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(url)
 }
 </script>
+
+<style scoped>
+.toolbar-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.checkbox-cell {
+    width: 3rem;
+    text-align: center;
+}
+
+button:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+</style>

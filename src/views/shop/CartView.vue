@@ -19,7 +19,17 @@
                                 <span style="font-weight: bold; color: #374151;">{{ item.name }}</span>
                             </div>
                         </td>
-                        <td class="text-center" style="color: #4b5563;">¥{{ item.price }}</td>
+                        <td class="text-center" style="color: #4b5563;">
+                            <div style="display: inline-flex; flex-direction: column; align-items: center; line-height: 1.2;">
+                                <span>¥{{ item.price }}</span>
+                                <span
+                                    v-if="Number(item.originalPrice) > Number(item.price)"
+                                    style="font-size: 0.75rem; color: #9ca3af; text-decoration: line-through;"
+                                >
+                                    ¥{{ item.originalPrice }}
+                                </span>
+                            </div>
+                        </td>
                         <td class="text-center">
                             <div class="quantity-control" style="display: inline-flex;">
                                 <button @click="updateQuantity(index, -1)" class="qty-btn" style="width: 2rem; height: 2rem;">-</button>

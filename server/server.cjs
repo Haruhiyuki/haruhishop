@@ -2,9 +2,43 @@ const express = require('express');
 const cors = require('cors');
 const bodyParser = require('body-parser');
 const multer = require('multer');
+const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
 const db = require('./db.cjs');
+
+const loadEnvFile = (filePath) => {
+    if (!fs.existsSync(filePath)) return;
+
+    const content = fs.readFileSync(filePath, 'utf8');
+    const lines = content.split(/\r?\n/);
+    for (const rawLine of lines) {
+        const trimmed = rawLine.trim();
+        if (!trimmed || trimmed.startsWith('#')) continue;
+
+        const line = trimmed.startsWith('export ') ? trimmed.slice(7).trim() : trimmed;
+        const equalIndex = line.indexOf('=');
+        if (equalIndex <= 0) continue;
+
+        const key = line.slice(0, equalIndex).trim();
+        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
+        if (Object.prototype.hasOwnProperty.call(process.env, key)) continue;
+
+        let value = line.slice(equalIndex + 1).trim();
+        if (
+            (value.startsWith('"') && value.endsWith('"')) ||
+            (value.startsWith("'") && value.endsWith("'"))
+        ) {
+            value = value.slice(1, -1);
+        } else {
+            const commentIndex = value.search(/\s+#/);
+            if (commentIndex !== -1) value = value.slice(0, commentIndex).trim();
+        }
+        process.env[key] = value.replace(/\\n/g, '\n');
+    }
+};
+
+loadEnvFile(path.resolve(__dirname, '..', '.env'));
 
 const app = express();
 const PORT = 13221;
@@ -29,47 +63,891 @@ function safeParse(str, fallback) {
     try { return JSON.parse(str); } catch { return fallback; }
 }
 
+const SALES_VALID_STATUSES = [2, 3, 4, 5]; // 已支付到已完成阶段
+const ORDER_STATUS_VALUES = [0, 1, 2, 3, 4, 5];
+const STATUS_TRANSITIONS = {
+    0: [],
+    1: [0, 2, 5], // 待付款 -> 取消 / 待发货 / 待确认
+    2: [0, 3],    // 待发货 -> 取消 / 已发货
+    3: [4],       // 已发货 -> 已完成
+    4: [],        // 已完成终态
+    5: [0, 2]     // 待确认 -> 取消 / 待发货
+};
+const CANCELLABLE_STATUSES = [1, 2, 5];
+const ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'admin';
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123456';
+const ADMIN_AUTH_SECRET = process.env.ADMIN_AUTH_SECRET || 'sos-admin-auth-secret-change-me';
+const ADMIN_TOKEN_TTL_SECONDS = Number(process.env.ADMIN_TOKEN_TTL_SECONDS || 24 * 60 * 60);
+const IS_PRODUCTION = process.env.NODE_ENV === 'production';
+const LOGIN_WINDOW_MS = 10 * 60 * 1000;
+const LOGIN_MAX_ATTEMPTS = 10;
+const loginAttempts = new Map();
+const FUNNEL_STEPS = [
+    { key: 'home_view', label: '首页访问' },
+    { key: 'product_view', label: '商品详情访问' },
+    { key: 'add_to_cart', label: '加入购物车' },
+    { key: 'checkout_view', label: '进入结算页' },
+    { key: 'order_submitted', label: '提交订单' },
+    { key: 'payment_submitted', label: '提交支付' }
+];
+const DEFAULT_SITE_CONFIG = Object.freeze({
+    payment: {
+        wechatQr: '',
+        alipayQr: '',
+        friendQr: '',
+        paymentNote: '请支付后备注订单号后四位，便于快速核销。',
+        friendHelpText: '长按识别二维码添加好友并转账，备注完整订单号。'
+    }
+});
+const COUPON_STATUS = Object.freeze({
+    DISABLED: 0,
+    UNUSED: 1,
+    USED: 2
+});
+const COUPON_DISCOUNT_TYPES = ['amount', 'percent'];
+
+const dbAll = (sql, params = []) =>
+    new Promise((resolve, reject) => db.all(sql, params, (err, rows) => (err ? reject(err) : resolve(rows))));
+
+const dbGet = (sql, params = []) =>
+    new Promise((resolve, reject) => db.get(sql, params, (err, row) => (err ? reject(err) : resolve(row))));
+
+const dbRun = (sql, params = []) =>
+    new Promise((resolve, reject) => {
+        db.run(sql, params, function (err) {
+            if (err) reject(err);
+            else resolve(this);
+        });
+    });
+
+const createBadRequestError = (message) => {
+    const error = new Error(message);
+    error.isBadRequest = true;
+    return error;
+};
+
+const cloneDefaultSiteConfig = () => JSON.parse(JSON.stringify(DEFAULT_SITE_CONFIG));
+
+const sanitizeConfigText = (value, maxLength = 300) => {
+    if (typeof value !== 'string') return '';
+    return value.trim().slice(0, maxLength);
+};
+
+const sanitizeConfigUrl = (value) => {
+    const clean = sanitizeConfigText(value, 500);
+    if (!clean) return '';
+    if (/^(https?:\/\/|\/api\/uploads\/)/i.test(clean)) return clean;
+    return '';
+};
+
+const toPositivePriceOrNull = (value) => {
+    const num = Number(value);
+    if (!Number.isFinite(num)) return null;
+    if (num <= 0) return null;
+    return Math.round(num * 100) / 100;
+};
+
+const normalizeDiscountPrice = (discountPrice, rawPrice) => {
+    const price = Number(rawPrice);
+    const discount = toPositivePriceOrNull(discountPrice);
+    if (discount === null) return null;
+    if (Number.isFinite(price) && price > 0 && discount >= price) return null;
+    return discount;
+};
+
+const normalizeSiteConfig = (rawConfig) => {
+    const normalized = cloneDefaultSiteConfig();
+    const payment = rawConfig && typeof rawConfig === 'object' ? rawConfig.payment || {} : {};
+
+    normalized.payment.wechatQr = sanitizeConfigUrl(payment.wechatQr);
+    normalized.payment.alipayQr = sanitizeConfigUrl(payment.alipayQr);
+    normalized.payment.friendQr = sanitizeConfigUrl(payment.friendQr);
+
+    const paymentNote = sanitizeConfigText(payment.paymentNote, 240);
+    if (paymentNote) normalized.payment.paymentNote = paymentNote;
+
+    const friendHelpText = sanitizeConfigText(payment.friendHelpText, 240);
+    if (friendHelpText) normalized.payment.friendHelpText = friendHelpText;
+
+    return normalized;
+};
+
+const loadSiteConfig = async () => {
+    const row = await dbGet('SELECT value FROM site_settings WHERE key = ?', ['site_config']);
+    const parsed = safeParse(row?.value, null);
+    return normalizeSiteConfig(parsed);
+};
+
+const saveSiteConfig = async (siteConfig) => {
+    const normalized = normalizeSiteConfig(siteConfig);
+    await dbRun(
+        `INSERT INTO site_settings (key, value, updated_at)
+         VALUES (?, ?, CURRENT_TIMESTAMP)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP`,
+        ['site_config', JSON.stringify(normalized)]
+    );
+    return normalized;
+};
+
+const roundMoney = (value) => Number((Number(value) || 0).toFixed(2));
+
+const normalizeCouponCode = (code) => String(code || '').trim().toUpperCase();
+
+const normalizeCouponPrefix = (prefix) => {
+    const clean = String(prefix || 'CPN').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
+    return clean || 'CPN';
+};
+
+const parseCouponDateTimeInput = (value) => {
+    if (!value) return null;
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return null;
+    return date.toISOString();
+};
+
+const normalizeCouponRuleInput = (payload = {}) => {
+    const name = sanitizeConfigText(payload.name || '优惠券', 60) || '优惠券';
+    const minSpend = Number(payload.minSpend || 0);
+    if (!Number.isFinite(minSpend) || minSpend < 0) return { error: '优惠门槛金额无效' };
+
+    const discountType = String(payload.discountType || 'amount').trim();
+    if (!COUPON_DISCOUNT_TYPES.includes(discountType)) return { error: '优惠类型无效' };
+
+    const discountValue = Number(payload.discountValue);
+    if (!Number.isFinite(discountValue) || discountValue <= 0) return { error: '优惠力度无效' };
+
+    let maxDiscount = null;
+    if (discountType === 'percent') {
+        if (discountValue >= 100) return { error: '折扣比例必须小于100%' };
+
+        if (payload.maxDiscount !== null && payload.maxDiscount !== undefined && String(payload.maxDiscount) !== '') {
+            const max = Number(payload.maxDiscount);
+            if (!Number.isFinite(max) || max <= 0) return { error: '最高优惠金额无效' };
+            maxDiscount = roundMoney(max);
+        }
+    } else {
+        maxDiscount = null;
+    }
+
+    const expiresAt = parseCouponDateTimeInput(payload.expiresAt);
+    if (payload.expiresAt && !expiresAt) return { error: '过期时间格式错误' };
+    if (expiresAt && new Date(expiresAt).getTime() <= Date.now()) return { error: '过期时间必须晚于当前时间' };
+
+    return {
+        rule: {
+            name,
+            minSpend: roundMoney(minSpend),
+            discountType,
+            discountValue: roundMoney(discountValue),
+            maxDiscount,
+            expiresAt
+        }
+    };
+};
+
+const getCouponDiscountAmount = (coupon, orderAmount) => {
+    const amount = roundMoney(orderAmount);
+    const minSpend = roundMoney(coupon.minSpend || 0);
+    if (amount < minSpend) {
+        return { error: `订单金额未达到使用门槛 ¥${minSpend}` };
+    }
+
+    const discountType = String(coupon.discountType || 'amount');
+    const discountValue = Number(coupon.discountValue);
+    if (!COUPON_DISCOUNT_TYPES.includes(discountType) || !Number.isFinite(discountValue) || discountValue <= 0) {
+        return { error: '优惠券配置异常' };
+    }
+
+    let discountAmount = 0;
+    if (discountType === 'percent') {
+        discountAmount = (amount * discountValue) / 100;
+        const maxDiscount = Number(coupon.maxDiscount);
+        if (Number.isFinite(maxDiscount) && maxDiscount > 0) {
+            discountAmount = Math.min(discountAmount, maxDiscount);
+        }
+    } else {
+        discountAmount = discountValue;
+    }
+
+    discountAmount = roundMoney(discountAmount);
+    if (discountAmount <= 0) return { error: '优惠券金额无效' };
+
+    return {
+        discountAmount: Math.min(discountAmount, amount),
+        payableAmount: roundMoney(Math.max(0, amount - discountAmount))
+    };
+};
+
+const isCouponExpired = (coupon) => {
+    if (!coupon?.expiresAt) return false;
+    const timestamp = new Date(coupon.expiresAt).getTime();
+    if (Number.isNaN(timestamp)) return true;
+    return timestamp <= Date.now();
+};
+
+const formatCoupon = (coupon) => ({
+    ...coupon,
+    code: normalizeCouponCode(coupon.code),
+    minSpend: roundMoney(coupon.minSpend),
+    discountValue: roundMoney(coupon.discountValue),
+    maxDiscount: coupon.maxDiscount === null || coupon.maxDiscount === undefined || coupon.maxDiscount === '' ? null : roundMoney(coupon.maxDiscount),
+    status: Number(coupon.status),
+    isExpired: isCouponExpired(coupon)
+});
+
+const getCouponBenefitText = (coupon) => {
+    if (coupon.discountType === 'percent') {
+        if (coupon.maxDiscount && Number(coupon.maxDiscount) > 0) {
+            return `${coupon.discountValue}% (最高减¥${coupon.maxDiscount})`;
+        }
+        return `${coupon.discountValue}%`;
+    }
+    return `减¥${coupon.discountValue}`;
+};
+
+const evaluateCoupon = (coupon, orderAmount) => {
+    if (!coupon) return { error: '优惠券不存在' };
+    const row = formatCoupon(coupon);
+    if (row.status !== COUPON_STATUS.UNUSED) return { error: '优惠券不可用' };
+    if (row.isExpired) return { error: '优惠券已过期' };
+
+    const discount = getCouponDiscountAmount(row, orderAmount);
+    if (discount.error) return discount;
+
+    return {
+        coupon: row,
+        ...discount
+    };
+};
+
+const getCouponByCode = async (code) =>
+    dbGet('SELECT * FROM coupons WHERE code = ?', [normalizeCouponCode(code)]);
+
+const generateBatchNo = () => {
+    const now = new Date();
+    const y = now.getFullYear();
+    const m = String(now.getMonth() + 1).padStart(2, '0');
+    const d = String(now.getDate()).padStart(2, '0');
+    const h = String(now.getHours()).padStart(2, '0');
+    const min = String(now.getMinutes()).padStart(2, '0');
+    const s = String(now.getSeconds()).padStart(2, '0');
+    return `B${y}${m}${d}${h}${min}${s}`;
+};
+
+const generateCouponCode = (prefix) => {
+    const random = crypto.randomBytes(4).toString('hex').toUpperCase();
+    const tail = Math.random().toString(36).slice(2, 6).toUpperCase();
+    return `${prefix}-${random}${tail}`;
+};
+
+const getEffectiveProductPrice = (productRow) => {
+    const discountPrice = normalizeDiscountPrice(productRow.discountPrice, productRow.price);
+    if (discountPrice !== null) return roundMoney(discountPrice);
+    return roundMoney(Number(productRow.price) || 0);
+};
+
+const toShippingGroupKey = (value) => String(value || 'default').trim() || 'default';
+
+const calculateOrderPricing = (normalizedItems, productRowsById) => {
+    const pricedItems = [];
+    const shippingGroups = {};
+    let productsTotal = 0;
+
+    for (const item of normalizedItems) {
+        const product = productRowsById.get(item.id);
+        if (!product) throw createBadRequestError(`商品 ${item.name || item.id} 不存在`);
+
+        const productStock = Number(product.stock) || 0;
+        if (productStock < item.quantity) {
+            throw createBadRequestError(`商品 ${product.name || item.id} 库存不足`);
+        }
+
+        const price = getEffectiveProductPrice(product);
+        const originalPrice = roundMoney(Number(product.price) || price);
+        const discountPrice = normalizeDiscountPrice(product.discountPrice, product.price);
+        const shippingTag = toShippingGroupKey(product.shippingTag);
+        const shippingCost = roundMoney(Number(product.shippingCost) || 0);
+
+        if (shippingGroups[shippingTag] === undefined || shippingCost > shippingGroups[shippingTag]) {
+            shippingGroups[shippingTag] = shippingCost;
+        }
+
+        productsTotal += price * item.quantity;
+        pricedItems.push({
+            id: item.id,
+            name: product.name || item.name || `商品${item.id}`,
+            quantity: item.quantity,
+            price,
+            originalPrice,
+            discountPrice,
+            shippingTag,
+            shippingCost
+        });
+    }
+
+    productsTotal = roundMoney(productsTotal);
+    const shippingFee = roundMoney(Object.values(shippingGroups).reduce((sum, fee) => sum + Number(fee || 0), 0));
+    const originalTotal = roundMoney(productsTotal + shippingFee);
+
+    return {
+        pricedItems,
+        productsTotal,
+        shippingFee,
+        originalTotal
+    };
+};
+
+if (
+    IS_PRODUCTION &&
+    (!process.env.ADMIN_USERNAME || !process.env.ADMIN_PASSWORD || !process.env.ADMIN_AUTH_SECRET)
+) {
+    throw new Error('生产环境必须配置 ADMIN_USERNAME / ADMIN_PASSWORD / ADMIN_AUTH_SECRET');
+}
+
+if (
+    !IS_PRODUCTION &&
+    (!process.env.ADMIN_USERNAME || !process.env.ADMIN_PASSWORD || !process.env.ADMIN_AUTH_SECRET)
+) {
+    console.warn('[Auth] 当前使用默认管理员凭据，仅适用于本地开发，请勿用于生产环境。');
+}
+
+const safeStringEqual = (a, b) => {
+    const x = Buffer.from(String(a));
+    const y = Buffer.from(String(b));
+    if (x.length !== y.length) return false;
+    return crypto.timingSafeEqual(x, y);
+};
+
+const signAdminToken = (payload) => {
+    const headerBase64 = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url');
+    const payloadBase64 = Buffer.from(JSON.stringify(payload)).toString('base64url');
+    const data = `${headerBase64}.${payloadBase64}`;
+    const signature = crypto.createHmac('sha256', ADMIN_AUTH_SECRET).update(data).digest('base64url');
+    return `${data}.${signature}`;
+};
+
+const verifyAdminToken = (token) => {
+    if (!token || typeof token !== 'string') return null;
+    const parts = token.split('.');
+    if (parts.length !== 3) return null;
+
+    const [headerBase64, payloadBase64, signature] = parts;
+    const data = `${headerBase64}.${payloadBase64}`;
+    const expectedSignature = crypto.createHmac('sha256', ADMIN_AUTH_SECRET).update(data).digest('base64url');
+    if (!safeStringEqual(signature, expectedSignature)) return null;
+
+    let payload;
+    try {
+        payload = JSON.parse(Buffer.from(payloadBase64, 'base64url').toString('utf8'));
+    } catch {
+        return null;
+    }
+
+    if (!payload || typeof payload !== 'object') return null;
+    if (payload.exp && Number(payload.exp) <= Math.floor(Date.now() / 1000)) return null;
+    return payload;
+};
+
+const extractBearerToken = (req) => {
+    const authHeader = req.headers.authorization || '';
+    const match = authHeader.match(/^Bearer\s+(.+)$/i);
+    return match ? match[1].trim() : '';
+};
+
+const requireAdminAuth = (req, res, next) => {
+    const token = extractBearerToken(req);
+    const payload = verifyAdminToken(token);
+    if (!payload || payload.role !== 'admin') {
+        return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    req.admin = payload;
+    next();
+};
+
+const isLoginRateLimited = (ip) => {
+    const now = Date.now();
+    const record = loginAttempts.get(ip);
+    if (!record) return false;
+
+    if (now - record.firstAt > LOGIN_WINDOW_MS) {
+        loginAttempts.delete(ip);
+        return false;
+    }
+    return record.count >= LOGIN_MAX_ATTEMPTS;
+};
+
+const recordLoginFailure = (ip) => {
+    const now = Date.now();
+    const record = loginAttempts.get(ip);
+    if (!record || now - record.firstAt > LOGIN_WINDOW_MS) {
+        loginAttempts.set(ip, { count: 1, firstAt: now });
+        return;
+    }
+    record.count += 1;
+    loginAttempts.set(ip, record);
+};
+
+const clearLoginFailure = (ip) => {
+    loginAttempts.delete(ip);
+};
+
+const extractPhoneLast4 = (phone) => {
+    const digits = String(phone || '').replace(/\D/g, '');
+    if (digits.length < 4) return '';
+    return digits.slice(-4);
+};
+
+const formatDate = (date) => {
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, '0');
+    const d = String(date.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+};
+
+const parseDateInput = (value) => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(value || ''))) return null;
+    const date = new Date(`${value}T00:00:00`);
+    if (Number.isNaN(date.getTime())) return null;
+    return date;
+};
+
+const getToday = () => {
+    const now = new Date();
+    now.setHours(0, 0, 0, 0);
+    return now;
+};
+
+const buildDateRange = (startDate, endDate) => {
+    const list = [];
+    const cur = parseDateInput(startDate);
+    const end = parseDateInput(endDate);
+    if (!cur || !end || cur > end) return list;
+
+    while (cur <= end) {
+        list.push(formatDate(cur));
+        cur.setDate(cur.getDate() + 1);
+    }
+    return list;
+};
+
+function resolveStatsRange({ period, startDate, endDate, defaultPeriod = '30', allowAll = true }) {
+    const selectedPeriod = String(period || defaultPeriod);
+    const today = getToday();
+
+    if (selectedPeriod === 'all') {
+        if (!allowAll) return { error: 'period 不支持 all' };
+        return { period: 'all', startDate: null, endDate: null };
+    }
+
+    if (selectedPeriod === 'custom') {
+        const start = parseDateInput(startDate);
+        const end = parseDateInput(endDate);
+        if (!start || !end) return { error: '自定义时间格式错误' };
+        if (start > end) return { error: '开始日期不能晚于结束日期' };
+        return { period: 'custom', startDate: formatDate(start), endDate: formatDate(end) };
+    }
+
+    const daySpan = Number(selectedPeriod);
+    if (![7, 30, 90].includes(daySpan)) return { error: 'period 参数无效' };
+
+    const start = new Date(today);
+    start.setDate(start.getDate() - daySpan + 1);
+    return { period: String(daySpan), startDate: formatDate(start), endDate: formatDate(today) };
+}
+
+function getPeriodRangeForProductReport(period) {
+    const p = String(period || 'week');
+    const today = getToday();
+
+    if (p === 'all') return { period: 'all', startDate: null, endDate: null };
+
+    if (p === 'week') {
+        const start = new Date(today);
+        const day = start.getDay() === 0 ? 7 : start.getDay();
+        start.setDate(start.getDate() - day + 1);
+        return { period: 'week', startDate: formatDate(start), endDate: formatDate(today) };
+    }
+
+    if (p === 'month') {
+        const start = new Date(today.getFullYear(), today.getMonth(), 1);
+        return { period: 'month', startDate: formatDate(start), endDate: formatDate(today) };
+    }
+
+    return { error: 'period 参数无效' };
+}
+
+app.post('/api/admin/login', (req, res) => {
+    const clientIp = req.ip || req.socket?.remoteAddress || 'unknown';
+    if (isLoginRateLimited(clientIp)) {
+        return res.status(429).json({ error: '登录尝试过于频繁，请稍后再试' });
+    }
+
+    const { username, password } = req.body || {};
+    if (typeof username !== 'string' || typeof password !== 'string') {
+        recordLoginFailure(clientIp);
+        return res.status(400).json({ error: '用户名或密码格式错误' });
+    }
+
+    if (!safeStringEqual(username.trim(), ADMIN_USERNAME) || !safeStringEqual(password, ADMIN_PASSWORD)) {
+        recordLoginFailure(clientIp);
+        return res.status(401).json({ error: '用户名或密码错误' });
+    }
+
+    clearLoginFailure(clientIp);
+
+    const now = Math.floor(Date.now() / 1000);
+    const token = signAdminToken({
+        sub: ADMIN_USERNAME,
+        role: 'admin',
+        iat: now,
+        exp: now + ADMIN_TOKEN_TTL_SECONDS
+    });
+
+    res.json({
+        token,
+        tokenType: 'Bearer',
+        expiresIn: ADMIN_TOKEN_TTL_SECONDS,
+        user: { name: ADMIN_USERNAME }
+    });
+});
+
+app.get('/api/admin/me', requireAdminAuth, (req, res) => {
+    res.json({
+        user: { name: req.admin.sub || ADMIN_USERNAME },
+        exp: req.admin.exp
+    });
+});
+
+app.get('/api/site-config', async (req, res) => {
+    try {
+        const config = await loadSiteConfig();
+        res.json(config);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/admin/site-config', requireAdminAuth, async (req, res) => {
+    try {
+        const config = await loadSiteConfig();
+        res.json(config);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.put('/api/admin/site-config', requireAdminAuth, async (req, res) => {
+    try {
+        const config = await saveSiteConfig(req.body || {});
+        res.json({ success: true, config });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/coupons/preview', async (req, res) => {
+    const code = normalizeCouponCode(req.body?.code);
+    const orderAmount = Number(req.body?.orderAmount);
+
+    if (!code) return res.status(400).json({ error: '请输入优惠券码' });
+    if (!Number.isFinite(orderAmount) || orderAmount <= 0) {
+        return res.status(400).json({ error: '订单金额无效' });
+    }
+
+    try {
+        const coupon = await getCouponByCode(code);
+        const result = evaluateCoupon(coupon, orderAmount);
+        if (result.error) return res.status(400).json({ error: result.error });
+
+        res.json({
+            valid: true,
+            code: result.coupon.code,
+            name: result.coupon.name,
+            minSpend: result.coupon.minSpend,
+            discountType: result.coupon.discountType,
+            discountValue: result.coupon.discountValue,
+            maxDiscount: result.coupon.maxDiscount,
+            benefitText: getCouponBenefitText(result.coupon),
+            orderAmount: roundMoney(orderAmount),
+            discountAmount: result.discountAmount,
+            payableAmount: result.payableAmount
+        });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/admin/coupons', requireAdminAuth, async (req, res) => {
+    const status = String(req.query.status || 'all');
+    const batchNo = sanitizeConfigText(req.query.batchNo || '', 80);
+    const keyword = sanitizeConfigText(req.query.keyword || '', 80);
+    const conditions = [];
+    const params = [];
+
+    if (status !== 'all') {
+        const numericStatus = Number(status);
+        if (![COUPON_STATUS.DISABLED, COUPON_STATUS.UNUSED, COUPON_STATUS.USED].includes(numericStatus)) {
+            return res.status(400).json({ error: 'status 参数无效' });
+        }
+        conditions.push('status = ?');
+        params.push(numericStatus);
+    }
+
+    if (batchNo) {
+        conditions.push('batchNo = ?');
+        params.push(batchNo);
+    }
+
+    if (keyword) {
+        conditions.push('(code LIKE ? OR name LIKE ?)');
+        params.push(`%${keyword}%`, `%${keyword}%`);
+    }
+
+    const whereSql = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
+    try {
+        const rows = await dbAll(
+            `SELECT * FROM coupons
+             ${whereSql}
+             ORDER BY created_at DESC, id DESC`,
+            params
+        );
+        res.json(
+            rows.map((row) => {
+                const coupon = formatCoupon(row);
+                return { ...coupon, benefitText: getCouponBenefitText(coupon) };
+            })
+        );
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/admin/coupons/batch', requireAdminAuth, async (req, res) => {
+    const quantity = Number(req.body?.quantity);
+    const prefix = normalizeCouponPrefix(req.body?.prefix);
+    const customBatchNo = sanitizeConfigText(req.body?.batchNo || '', 30).toUpperCase();
+    const batchNo = customBatchNo || generateBatchNo();
+    let transactionStarted = false;
+
+    const normalizedRule = normalizeCouponRuleInput(req.body || {});
+    if (normalizedRule.error) return res.status(400).json({ error: normalizedRule.error });
+
+    if (!Number.isInteger(quantity) || quantity <= 0 || quantity > 2000) {
+        return res.status(400).json({ error: '优惠券数量必须为1-2000的整数' });
+    }
+
+    try {
+        await dbRun('BEGIN IMMEDIATE TRANSACTION');
+        transactionStarted = true;
+
+        const generatedCodes = [];
+        for (let i = 0; i < quantity; i += 1) {
+            let inserted = false;
+
+            for (let attempt = 0; attempt < 10 && !inserted; attempt += 1) {
+                const code = generateCouponCode(prefix);
+                try {
+                    await dbRun(
+                        `INSERT INTO coupons
+                         (code, name, batchNo, minSpend, discountType, discountValue, maxDiscount, status, expiresAt)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                        [
+                            code,
+                            normalizedRule.rule.name,
+                            batchNo,
+                            normalizedRule.rule.minSpend,
+                            normalizedRule.rule.discountType,
+                            normalizedRule.rule.discountValue,
+                            normalizedRule.rule.maxDiscount,
+                            COUPON_STATUS.UNUSED,
+                            normalizedRule.rule.expiresAt
+                        ]
+                    );
+                    generatedCodes.push(code);
+                    inserted = true;
+                } catch (err) {
+                    if (err.code === 'SQLITE_CONSTRAINT') continue;
+                    throw err;
+                }
+            }
+
+            if (!inserted) {
+                throw new Error('优惠券码生成冲突，请重试');
+            }
+        }
+
+        await dbRun('COMMIT');
+        transactionStarted = false;
+
+        res.json({
+            success: true,
+            batchNo,
+            quantity: generatedCodes.length,
+            couponRule: normalizedRule.rule,
+            codes: generatedCodes
+        });
+    } catch (err) {
+        if (transactionStarted) {
+            try { await dbRun('ROLLBACK'); } catch {}
+        }
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.put('/api/admin/coupons/:id/status', requireAdminAuth, async (req, res) => {
+    const couponId = Number(req.params.id);
+    const status = Number(req.body?.status);
+    if (!Number.isInteger(couponId) || couponId <= 0) {
+        return res.status(400).json({ error: '优惠券ID无效' });
+    }
+    if (![COUPON_STATUS.DISABLED, COUPON_STATUS.UNUSED].includes(status)) {
+        return res.status(400).json({ error: '仅支持设置为禁用或可用' });
+    }
+
+    try {
+        const coupon = await dbGet('SELECT id, status FROM coupons WHERE id = ?', [couponId]);
+        if (!coupon) return res.status(404).json({ error: '优惠券不存在' });
+        if (Number(coupon.status) === COUPON_STATUS.USED) {
+            return res.status(400).json({ error: '已使用优惠券不可更改状态' });
+        }
+
+        await dbRun('UPDATE coupons SET status = ? WHERE id = ?', [status, couponId]);
+        res.json({ success: true, status });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.delete('/api/admin/coupons/:id', requireAdminAuth, async (req, res) => {
+    const couponId = Number(req.params.id);
+    if (!Number.isInteger(couponId) || couponId <= 0) {
+        return res.status(400).json({ error: '优惠券ID无效' });
+    }
+
+    try {
+        const coupon = await dbGet('SELECT id, status FROM coupons WHERE id = ?', [couponId]);
+        if (!coupon) return res.status(404).json({ error: '优惠券不存在' });
+        if (Number(coupon.status) === COUPON_STATUS.USED) {
+            return res.status(400).json({ error: '已使用优惠券不可删除' });
+        }
+
+        await dbRun('DELETE FROM coupons WHERE id = ?', [couponId]);
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // --- 商品相关接口 (保持不变) ---
 app.get('/api/products', (req, res) => {
     db.all("SELECT * FROM products", [], (err, rows) => {
         if (err) return res.status(500).json({ error: err.message });
         const products = rows.map(p => ({
             ...p,
+            price: Number(p.price) || 0,
+            discountPrice: normalizeDiscountPrice(p.discountPrice, p.price),
             specs: safeParse(p.specs, []),
             detailImages: safeParse(p.detailImages, []),
             shippingTag: p.shippingTag || 'default',
-            shippingCost: p.shippingCost || 0
+            shippingCost: Number(p.shippingCost) || 0
         }));
         res.json(products);
     });
 });
 
-app.post('/api/upload', upload.single('file'), (req, res) => {
+app.post('/api/upload', requireAdminAuth, upload.single('file'), (req, res) => {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
     res.json({ url: `/api/uploads/${req.file.filename}` });
 });
 
-app.post('/api/products', (req, res) => {
-    const { name, price, category, typeId, stock, image, desc, specs, detailText, detailImages, shippingTag, shippingCost } = req.body;
-    const sql = `INSERT INTO products (name, price, category, typeId, stock, image, desc, specs, detailText, detailImages, shippingTag, shippingCost) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
-    const params = [name, price, category, typeId, stock, image, desc, JSON.stringify(specs || []), detailText || '', JSON.stringify(detailImages || []), shippingTag || 'default', shippingCost || 0];
+app.post('/api/products', requireAdminAuth, (req, res) => {
+    const { name, price, discountPrice, category, typeId, stock, image, desc, specs, detailText, detailImages, shippingTag, shippingCost } = req.body;
+    const cleanPrice = Number(price);
+    const cleanStock = Number(stock);
+    const cleanShippingCost = Number(shippingCost || 0);
+    const cleanDiscountPrice = normalizeDiscountPrice(discountPrice, cleanPrice);
+
+    if (!Number.isFinite(cleanPrice) || cleanPrice < 0) {
+        return res.status(400).json({ error: '商品价格无效' });
+    }
+    if (!Number.isInteger(cleanStock) || cleanStock < 0) {
+        return res.status(400).json({ error: '库存无效' });
+    }
+    if (!Number.isFinite(cleanShippingCost) || cleanShippingCost < 0) {
+        return res.status(400).json({ error: '运费无效' });
+    }
+    if (discountPrice !== null && discountPrice !== undefined && String(discountPrice) !== '' && cleanDiscountPrice === null) {
+        return res.status(400).json({ error: '折扣价必须大于0且小于原价' });
+    }
+
+    const sql = `INSERT INTO products (name, price, discountPrice, category, typeId, stock, image, desc, specs, detailText, detailImages, shippingTag, shippingCost) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+    const params = [
+        String(name || '').trim(),
+        cleanPrice,
+        cleanDiscountPrice,
+        String(category || '').trim(),
+        String(typeId || '').trim(),
+        cleanStock,
+        image || '',
+        desc || '',
+        JSON.stringify(specs || []),
+        detailText || '',
+        JSON.stringify(detailImages || []),
+        shippingTag || 'default',
+        cleanShippingCost
+    ];
     db.run(sql, params, function (err) {
         if (err) return res.status(500).json({ error: err.message });
         res.json({ id: this.lastID, ...req.body });
     });
 });
 
-app.put('/api/products/:id', (req, res) => {
-    const { name, price, category, typeId, stock, image, desc, specs, detailText, detailImages, shippingTag, shippingCost } = req.body;
-    const sql = `UPDATE products SET name=?, price=?, category=?, typeId=?, stock=?, image=?, desc=?, specs=?, detailText=?, detailImages=?, shippingTag=?, shippingCost=? WHERE id=?`;
-    const params = [name, price, category, typeId, stock, image, desc, JSON.stringify(specs || []), detailText || '', JSON.stringify(detailImages || []), shippingTag || 'default', shippingCost || 0, req.params.id];
+app.put('/api/products/:id', requireAdminAuth, (req, res) => {
+    const { name, price, discountPrice, category, typeId, stock, image, desc, specs, detailText, detailImages, shippingTag, shippingCost } = req.body;
+    const cleanPrice = Number(price);
+    const cleanStock = Number(stock);
+    const cleanShippingCost = Number(shippingCost || 0);
+    const cleanDiscountPrice = normalizeDiscountPrice(discountPrice, cleanPrice);
+
+    if (!Number.isFinite(cleanPrice) || cleanPrice < 0) {
+        return res.status(400).json({ error: '商品价格无效' });
+    }
+    if (!Number.isInteger(cleanStock) || cleanStock < 0) {
+        return res.status(400).json({ error: '库存无效' });
+    }
+    if (!Number.isFinite(cleanShippingCost) || cleanShippingCost < 0) {
+        return res.status(400).json({ error: '运费无效' });
+    }
+    if (discountPrice !== null && discountPrice !== undefined && String(discountPrice) !== '' && cleanDiscountPrice === null) {
+        return res.status(400).json({ error: '折扣价必须大于0且小于原价' });
+    }
+
+    const sql = `UPDATE products SET name=?, price=?, discountPrice=?, category=?, typeId=?, stock=?, image=?, desc=?, specs=?, detailText=?, detailImages=?, shippingTag=?, shippingCost=? WHERE id=?`;
+    const params = [
+        String(name || '').trim(),
+        cleanPrice,
+        cleanDiscountPrice,
+        String(category || '').trim(),
+        String(typeId || '').trim(),
+        cleanStock,
+        image || '',
+        desc || '',
+        JSON.stringify(specs || []),
+        detailText || '',
+        JSON.stringify(detailImages || []),
+        shippingTag || 'default',
+        cleanShippingCost,
+        req.params.id
+    ];
     db.run(sql, params, function (err) {
         if (err) return res.status(500).json({ error: err.message });
         res.json({ message: 'Updated', changes: this.changes });
     });
 });
 
-app.delete('/api/products/:id', (req, res) => {
+app.delete('/api/products/:id', requireAdminAuth, (req, res) => {
     db.run("DELETE FROM products WHERE id = ?", req.params.id, function (err) {
         if (err) return res.status(500).json({ error: err.message });
         res.json({ message: 'Deleted', changes: this.changes });
@@ -79,7 +957,7 @@ app.delete('/api/products/:id', (req, res) => {
 // --- 订单管理核心接口 ---
 
 // 1. 获取订单列表 (支持状态过滤)
-app.get('/api/orders', (req, res) => {
+app.get('/api/orders', requireAdminAuth, (req, res) => {
     const status = req.query.status;
     let sql = "SELECT * FROM orders ORDER BY created_at DESC";
     let params = [];
@@ -108,51 +986,155 @@ app.get('/api/orders', (req, res) => {
     });
 });
 
-// 2. 创建订单 (锁库存)
-app.post('/api/orders', (req, res) => {
-    const { id, items, contact, total } = req.body;
+// 2. 创建订单 (事务 + 锁库存)
+app.post('/api/orders', async (req, res) => {
+    const { id, items, contact, total, couponCode: rawCouponCode } = req.body || {};
+    let transactionStarted = false;
 
-    // 检查库存
-    const checkStockPromises = items.map(item => {
-        return new Promise((resolve, reject) => {
-            db.get("SELECT stock FROM products WHERE id = ?", [item.id], (err, row) => {
-                if (err) reject(err);
-                else if (!row || row.stock < item.quantity) reject(new Error(`商品 ${item.name} 库存不足`));
-                else resolve();
-            });
+    try {
+        if (!id || typeof id !== 'string') throw createBadRequestError('订单号不能为空');
+        if (!Array.isArray(items) || items.length === 0) throw createBadRequestError('订单商品不能为空');
+        if (!contact || typeof contact !== 'object') throw createBadRequestError('收货信息不能为空');
+
+        const contactName = String(contact.name || '').trim();
+        const contactPhone = String(contact.phone || '').trim();
+        const contactEmail = String(contact.email || '').trim();
+        const contactProvince = String(contact.province || '').trim();
+        const contactCity = String(contact.city || '').trim();
+        const contactDistrict = String(contact.district || '').trim();
+        const contactAddressDetail = String(contact.addressDetail || contact.address || '').trim();
+
+        if (!contactName) throw createBadRequestError('收货人姓名不能为空');
+        if (!/^1[3-9]\d{9}$/.test(contactPhone)) throw createBadRequestError('手机号格式错误');
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(contactEmail)) throw createBadRequestError('邮箱格式错误');
+        if (!contactProvince || !contactCity || !contactDistrict) throw createBadRequestError('省市区信息不完整');
+        if (!contactAddressDetail) throw createBadRequestError('详细地址不能为空');
+
+        const normalizedItems = items.map((item, index) => {
+            const productId = Number(item.id);
+            const quantity = Number(item.quantity);
+            if (!Number.isInteger(productId) || productId <= 0) {
+                throw createBadRequestError(`第 ${index + 1} 个商品ID无效`);
+            }
+            if (!Number.isInteger(quantity) || quantity <= 0) {
+                throw createBadRequestError(`商品 ${item.name || productId} 数量无效`);
+            }
+            return { ...item, id: productId, quantity };
         });
-    });
 
-    Promise.all(checkStockPromises)
-        .then(() => {
-            // 扣减库存
-            items.forEach(item => {
-                db.run("UPDATE products SET stock = stock - ? WHERE id = ?", [item.quantity, item.id]);
-            });
+        const clientTotal = Number(total);
+        if (!Number.isFinite(clientTotal) || clientTotal < 0) {
+            throw createBadRequestError('订单金额无效');
+        }
+        const couponCode = normalizeCouponCode(rawCouponCode);
 
-            // 插入订单 (展开地址信息)
-            const sql = `INSERT INTO orders
-                (id, total, items, contactName, contactPhone, contactEmail, province, city, district, addressDetail, status)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+        await dbRun('BEGIN IMMEDIATE TRANSACTION');
+        transactionStarted = true;
 
-            const params = [
-                id, total, JSON.stringify(items),
-                contact.name, contact.phone, contact.email,
-                contact.province, contact.city, contact.district, contact.address,
-                1 // 状态1: 待付款
-            ];
+        const uniqueProductIds = [...new Set(normalizedItems.map((item) => item.id))];
+        const productRows = await dbAll(
+            `SELECT id, name, price, discountPrice, stock, shippingTag, shippingCost
+             FROM products
+             WHERE id IN (${uniqueProductIds.map(() => '?').join(', ')})`,
+            uniqueProductIds
+        );
+        const productRowsById = new Map(productRows.map((row) => [Number(row.id), row]));
+        const quantityByProductId = normalizedItems.reduce((map, item) => {
+            map.set(item.id, (map.get(item.id) || 0) + item.quantity);
+            return map;
+        }, new Map());
 
-            db.run(sql, params, function (err) {
-                if (err) {
-                    console.error(err);
-                    return res.status(500).json({ error: 'Order creation failed' });
-                }
-                res.json({ success: true, orderId: id });
-            });
-        })
-        .catch(err => {
-            res.status(400).json({ error: err.message });
+        for (const [productId, totalQty] of quantityByProductId) {
+            const product = productRowsById.get(productId);
+            if (!product) throw createBadRequestError(`商品 ${productId} 不存在`);
+            if ((Number(product.stock) || 0) < totalQty) {
+                throw createBadRequestError(`商品 ${product.name || productId} 库存不足`);
+            }
+        }
+
+        const pricing = calculateOrderPricing(normalizedItems, productRowsById);
+
+        let couponDiscountAmount = 0;
+        let appliedCoupon = null;
+        if (couponCode) {
+            const coupon = await getCouponByCode(couponCode);
+            const evaluatedCoupon = evaluateCoupon(coupon, pricing.originalTotal);
+            if (evaluatedCoupon.error) throw createBadRequestError(evaluatedCoupon.error);
+
+            appliedCoupon = evaluatedCoupon.coupon;
+            couponDiscountAmount = evaluatedCoupon.discountAmount;
+        }
+
+        const serverTotal = roundMoney(Math.max(0, pricing.originalTotal - couponDiscountAmount));
+        if (Math.abs(clientTotal - serverTotal) > 0.01) {
+            throw createBadRequestError('订单金额已变化，请刷新页面后重试');
+        }
+
+        for (const [productId, totalQty] of quantityByProductId) {
+            await dbRun("UPDATE products SET stock = stock - ? WHERE id = ?", [totalQty, productId]);
+        }
+
+        const sql = `INSERT INTO orders
+            (id, total, originalTotal, discountAmount, couponCode, items, contactName, contactPhone, contactEmail, province, city, district, addressDetail, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+
+        const params = [
+            id,
+            serverTotal,
+            pricing.originalTotal,
+            couponDiscountAmount,
+            appliedCoupon ? appliedCoupon.code : null,
+            JSON.stringify(pricing.pricedItems),
+            contactName,
+            contactPhone,
+            contactEmail,
+            contactProvince,
+            contactCity,
+            contactDistrict,
+            contactAddressDetail,
+            1 // 状态1: 待付款
+        ];
+
+        await dbRun(sql, params);
+
+        if (appliedCoupon) {
+            const result = await dbRun(
+                `UPDATE coupons
+                 SET status = ?, usedOrderId = ?, used_at = CURRENT_TIMESTAMP
+                 WHERE id = ? AND status = ?`,
+                [COUPON_STATUS.USED, id, appliedCoupon.id, COUPON_STATUS.UNUSED]
+            );
+            if (Number(result.changes) !== 1) {
+                throw createBadRequestError('优惠券已被使用，请更换后重试');
+            }
+        }
+
+        await dbRun('COMMIT');
+        transactionStarted = false;
+
+        res.json({
+            success: true,
+            orderId: id,
+            total: serverTotal,
+            originalTotal: pricing.originalTotal,
+            discountAmount: couponDiscountAmount,
+            couponCode: appliedCoupon ? appliedCoupon.code : null
         });
+    } catch (err) {
+        if (transactionStarted) {
+            try { await dbRun('ROLLBACK'); } catch (rollbackErr) { console.error('Rollback create order failed:', rollbackErr); }
+        }
+
+        if (err.isBadRequest) {
+            return res.status(400).json({ error: err.message });
+        }
+        if (err.code === 'SQLITE_CONSTRAINT') {
+            return res.status(409).json({ error: '订单号已存在，请重新提交订单' });
+        }
+
+        console.error('Order creation failed:', err);
+        res.status(500).json({ error: 'Order creation failed' });
+    }
 });
 
 // 3. 按订单号查询单个订单 (前台用)
@@ -160,6 +1142,20 @@ app.get('/api/orders/:id', (req, res) => {
     db.get("SELECT * FROM orders WHERE id = ?", [req.params.id], (err, order) => {
         if (err) return res.status(500).json({ error: err.message });
         if (!order) return res.status(404).json({ error: '订单不存在' });
+
+        const adminPayload = verifyAdminToken(extractBearerToken(req));
+        if (!adminPayload || adminPayload.role !== 'admin') {
+            const phoneLast4 = String(req.query.phoneLast4 || '').trim();
+            if (!/^\d{4}$/.test(phoneLast4)) {
+                return res.status(400).json({ error: '请填写手机号后四位' });
+            }
+
+            const expectedLast4 = extractPhoneLast4(order.contactPhone);
+            if (!expectedLast4 || phoneLast4 !== expectedLast4) {
+                return res.status(403).json({ error: '手机号后四位校验失败' });
+            }
+        }
+
         res.json({
             ...order,
             items: safeParse(order.items, []),
@@ -176,31 +1172,94 @@ app.get('/api/orders/:id', (req, res) => {
     });
 });
 
-// 4. 更新订单状态 (包含库存回滚逻辑)
-app.put('/api/orders/:id/status', (req, res) => {
-    const { status, trackingCompany, trackingNo } = req.body; // status: 0=取消, 2=已支付, 3=已发货
+// 用户提交支付凭证：待付款(1) -> 待确认(5)
+app.post('/api/orders/:id/payment', async (req, res) => {
     const orderId = req.params.id;
+    let transactionStarted = false;
 
-    // 获取订单信息用于库存回滚
-    db.get("SELECT status, items FROM orders WHERE id = ?", [orderId], (err, order) => {
-        if (err || !order) return res.status(404).json({ error: 'Order not found' });
+    try {
+        await dbRun('BEGIN IMMEDIATE TRANSACTION');
+        transactionStarted = true;
 
-        const oldStatus = order.status;
-        const items = safeParse(order.items, []);
+        const order = await dbGet("SELECT status FROM orders WHERE id = ?", [orderId]);
+        if (!order) {
+            await dbRun('ROLLBACK');
+            transactionStarted = false;
+            return res.status(404).json({ error: '订单不存在' });
+        }
 
-        // 如果是取消订单 (status = 0)，且之前不是取消状态，则回滚库存
-        if (status == 0 && oldStatus != 0) {
-            console.log(`Cancelling order ${orderId}, restoring stock...`);
-            items.forEach(item => {
-                db.run("UPDATE products SET stock = stock + ? WHERE id = ?", [item.quantity, item.id]);
+        const oldStatus = Number(order.status);
+        if (oldStatus === 5) {
+            await dbRun('COMMIT');
+            transactionStarted = false;
+            return res.json({ success: true, status: 5 });
+        }
+
+        if (oldStatus !== 1) {
+            await dbRun('ROLLBACK');
+            transactionStarted = false;
+            return res.status(400).json({ error: '当前订单状态不允许提交支付' });
+        }
+
+        await dbRun("UPDATE orders SET status = 5 WHERE id = ?", [orderId]);
+        await dbRun('COMMIT');
+        transactionStarted = false;
+        res.json({ success: true, status: 5 });
+    } catch (err) {
+        if (transactionStarted) {
+            try { await dbRun('ROLLBACK'); } catch {}
+        }
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// 4. 更新订单状态 (状态机校验 + 事务库存回滚)
+app.put('/api/orders/:id/status', requireAdminAuth, async (req, res) => {
+    const orderId = req.params.id;
+    const { trackingCompany, trackingNo } = req.body || {};
+    const newStatus = Number(req.body?.status);
+    let transactionStarted = false;
+
+    if (!Number.isInteger(newStatus) || !ORDER_STATUS_VALUES.includes(newStatus)) {
+        return res.status(400).json({ error: '订单状态值无效' });
+    }
+
+    try {
+        await dbRun('BEGIN IMMEDIATE TRANSACTION');
+        transactionStarted = true;
+
+        const order = await dbGet("SELECT status, items FROM orders WHERE id = ?", [orderId]);
+        if (!order) {
+            await dbRun('ROLLBACK');
+            transactionStarted = false;
+            return res.status(404).json({ error: 'Order not found' });
+        }
+
+        const oldStatus = Number(order.status);
+        const allowedNextStatuses = STATUS_TRANSITIONS[oldStatus] || [];
+        if (newStatus !== oldStatus && !allowedNextStatuses.includes(newStatus)) {
+            await dbRun('ROLLBACK');
+            transactionStarted = false;
+            return res.status(400).json({
+                error: `非法状态流转: ${oldStatus} -> ${newStatus}`
             });
         }
 
-        // 更新状态和物流信息
-        let sql = "UPDATE orders SET status = ?";
-        let params = [status];
+        if (newStatus === 0 && CANCELLABLE_STATUSES.includes(oldStatus)) {
+            const items = safeParse(order.items, []);
+            for (const item of items) {
+                const productId = Number(item.id);
+                const quantity = Number(item.quantity) || 0;
+                if (Number.isInteger(productId) && quantity > 0) {
+                    await dbRun("UPDATE products SET stock = stock + ? WHERE id = ?", [quantity, productId]);
+                }
+            }
+        }
 
-        if (trackingCompany && trackingNo) {
+        let sql = "UPDATE orders SET status = ?";
+        const params = [newStatus];
+
+        if (newStatus === 3 && trackingCompany && trackingNo) {
             sql += ", trackingCompany = ?, trackingNo = ?";
             params.push(trackingCompany, trackingNo);
         }
@@ -208,11 +1267,266 @@ app.put('/api/orders/:id/status', (req, res) => {
         sql += " WHERE id = ?";
         params.push(orderId);
 
-        db.run(sql, params, function (err) {
-            if (err) return res.status(500).json({ error: err.message });
-            res.json({ success: true, status: status });
-        });
+        await dbRun(sql, params);
+        await dbRun('COMMIT');
+        transactionStarted = false;
+
+        res.json({ success: true, status: newStatus });
+    } catch (err) {
+        if (transactionStarted) {
+            try { await dbRun('ROLLBACK'); } catch (rollbackErr) { console.error('Rollback update status failed:', rollbackErr); }
+        }
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// --- 数据统计与转化埋点接口 ---
+
+app.post('/api/analytics/event', async (req, res) => {
+    const { sessionId, eventKey, page, meta } = req.body || {};
+    const cleanEventKey = typeof eventKey === 'string' ? eventKey.trim().slice(0, 80) : '';
+
+    if (!cleanEventKey) {
+        return res.status(400).json({ error: 'eventKey 不能为空' });
+    }
+
+    const cleanSessionId =
+        typeof sessionId === 'string' && sessionId.trim() ? sessionId.trim().slice(0, 120) : 'anonymous';
+    const cleanPage = typeof page === 'string' ? page.slice(0, 200) : '';
+    const cleanMeta =
+        meta && typeof meta === 'object'
+            ? JSON.stringify(meta).slice(0, 2000)
+            : JSON.stringify({});
+
+    try {
+        await dbRun(
+            `INSERT INTO analytics_events (sessionId, eventKey, page, meta)
+             VALUES (?, ?, ?, ?)`,
+            [cleanSessionId, cleanEventKey, cleanPage, cleanMeta]
+        );
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/admin/stats/sales-trend', requireAdminAuth, async (req, res) => {
+    const parsedRange = resolveStatsRange({
+        period: req.query.period,
+        startDate: req.query.startDate,
+        endDate: req.query.endDate,
+        defaultPeriod: '30',
+        allowAll: true
     });
+
+    if (parsedRange.error) return res.status(400).json({ error: parsedRange.error });
+
+    try {
+        let { startDate, endDate } = parsedRange;
+        const statusPlaceholders = SALES_VALID_STATUSES.map(() => '?').join(', ');
+
+        if (parsedRange.period === 'all') {
+            const span = await dbGet(
+                `SELECT MIN(DATE(created_at)) AS startDate, MAX(DATE(created_at)) AS endDate
+                 FROM orders
+                 WHERE status IN (${statusPlaceholders})`,
+                SALES_VALID_STATUSES
+            );
+
+            if (!span || !span.startDate) {
+                return res.json({
+                    period: 'all',
+                    startDate: null,
+                    endDate: null,
+                    points: [],
+                    summary: { salesAmount: 0, orderCount: 0, avgOrderAmount: 0 }
+                });
+            }
+
+            startDate = span.startDate;
+            endDate = span.endDate;
+        }
+
+        const rows = await dbAll(
+            `SELECT DATE(created_at) AS day, SUM(total) AS salesAmount, COUNT(*) AS orderCount
+             FROM orders
+             WHERE status IN (${statusPlaceholders})
+               AND DATE(created_at) BETWEEN DATE(?) AND DATE(?)
+             GROUP BY DATE(created_at)
+             ORDER BY DATE(created_at) ASC`,
+            [...SALES_VALID_STATUSES, startDate, endDate]
+        );
+
+        const rowMap = new Map(
+            rows.map((r) => [
+                r.day,
+                {
+                    salesAmount: Number(r.salesAmount) || 0,
+                    orderCount: Number(r.orderCount) || 0
+                }
+            ])
+        );
+
+        const points = buildDateRange(startDate, endDate).map((day) => {
+            const item = rowMap.get(day) || { salesAmount: 0, orderCount: 0 };
+            return { date: day, salesAmount: item.salesAmount, orderCount: item.orderCount };
+        });
+
+        const summary = points.reduce(
+            (acc, item) => {
+                acc.salesAmount += item.salesAmount;
+                acc.orderCount += item.orderCount;
+                return acc;
+            },
+            { salesAmount: 0, orderCount: 0 }
+        );
+        summary.avgOrderAmount = summary.orderCount > 0 ? Number((summary.salesAmount / summary.orderCount).toFixed(2)) : 0;
+
+        res.json({
+            period: parsedRange.period,
+            startDate,
+            endDate,
+            points,
+            summary
+        });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/admin/stats/product-sales', requireAdminAuth, async (req, res) => {
+    const range = getPeriodRangeForProductReport(req.query.period);
+    if (range.error) return res.status(400).json({ error: range.error });
+
+    try {
+        const statusPlaceholders = SALES_VALID_STATUSES.map(() => '?').join(', ');
+        let sql = `SELECT items FROM orders WHERE status IN (${statusPlaceholders})`;
+        const params = [...SALES_VALID_STATUSES];
+
+        if (range.period !== 'all') {
+            sql += ` AND DATE(created_at) BETWEEN DATE(?) AND DATE(?)`;
+            params.push(range.startDate, range.endDate);
+        }
+
+        const rows = await dbAll(sql, params);
+        const summaryMap = new Map();
+
+        rows.forEach((row) => {
+            const items = safeParse(row.items, []);
+            items.forEach((item) => {
+                const quantity = Number(item.quantity) || 0;
+                if (quantity <= 0) return;
+
+                const key = item.id ? `id:${item.id}` : `name:${item.name || 'unknown'}`;
+                if (!summaryMap.has(key)) {
+                    summaryMap.set(key, {
+                        productId: item.id || null,
+                        name: item.name || '未命名商品',
+                        quantity: 0,
+                        amount: 0
+                    });
+                }
+
+                const rowItem = summaryMap.get(key);
+                rowItem.quantity += quantity;
+                rowItem.amount += (Number(item.price) || 0) * quantity;
+            });
+        });
+
+        const items = [...summaryMap.values()].sort((a, b) => b.quantity - a.quantity || b.amount - a.amount);
+        const totalQuantity = items.reduce((sum, item) => sum + item.quantity, 0);
+        const totalAmount = items.reduce((sum, item) => sum + item.amount, 0);
+
+        res.json({
+            period: range.period,
+            startDate: range.startDate,
+            endDate: range.endDate,
+            items,
+            totalQuantity,
+            totalAmount
+        });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/admin/stats/conversion', requireAdminAuth, async (req, res) => {
+    const parsedRange = resolveStatsRange({
+        period: req.query.period,
+        startDate: req.query.startDate,
+        endDate: req.query.endDate,
+        defaultPeriod: '30',
+        allowAll: true
+    });
+
+    if (parsedRange.error) return res.status(400).json({ error: parsedRange.error });
+
+    try {
+        let { startDate, endDate } = parsedRange;
+
+        if (parsedRange.period === 'all') {
+            const span = await dbGet(
+                `SELECT MIN(DATE(created_at)) AS startDate, MAX(DATE(created_at)) AS endDate
+                 FROM analytics_events`
+            );
+
+            if (!span || !span.startDate) {
+                const emptySteps = FUNNEL_STEPS.map((step, index) => ({
+                    ...step,
+                    visitors: 0,
+                    conversionRate: index === 0 ? 100 : 0
+                }));
+
+                return res.json({
+                    period: 'all',
+                    startDate: null,
+                    endDate: null,
+                    steps: emptySteps,
+                    overallConversion: 0
+                });
+            }
+
+            startDate = span.startDate;
+            endDate = span.endDate;
+        }
+
+        const eventKeys = FUNNEL_STEPS.map((step) => step.key);
+        const placeholders = eventKeys.map(() => '?').join(', ');
+        const rows = await dbAll(
+            `SELECT eventKey, COUNT(DISTINCT sessionId) AS visitors
+             FROM analytics_events
+             WHERE eventKey IN (${placeholders})
+               AND DATE(created_at) BETWEEN DATE(?) AND DATE(?)
+             GROUP BY eventKey`,
+            [...eventKeys, startDate, endDate]
+        );
+
+        const visitorMap = new Map(rows.map((row) => [row.eventKey, Number(row.visitors) || 0]));
+
+        const steps = FUNNEL_STEPS.map((step, index) => {
+            const visitors = visitorMap.get(step.key) || 0;
+            const prevVisitors = index === 0 ? visitors : visitorMap.get(FUNNEL_STEPS[index - 1].key) || 0;
+            const conversionRate =
+                index === 0 ? 100 : prevVisitors > 0 ? Number(((visitors / prevVisitors) * 100).toFixed(2)) : 0;
+
+            return { ...step, visitors, conversionRate };
+        });
+
+        const firstStepVisitors = steps[0]?.visitors || 0;
+        const lastStepVisitors = steps[steps.length - 1]?.visitors || 0;
+        const overallConversion =
+            firstStepVisitors > 0 ? Number(((lastStepVisitors / firstStepVisitors) * 100).toFixed(2)) : 0;
+
+        res.json({
+            period: parsedRange.period,
+            startDate,
+            endDate,
+            steps,
+            overallConversion
+        });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 app.listen(PORT, () => {

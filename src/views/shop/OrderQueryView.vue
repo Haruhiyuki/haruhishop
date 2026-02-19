@@ -1,10 +1,22 @@
 <template>
     <div class="query-box">
         <h2 style="font-size: 1.5rem; font-weight: bold; text-align: center; color: #1f2937; margin-bottom: 2rem;">订单查询</h2>
-        <div class="flex-row gap-4" style="margin-bottom: 2rem;">
+        <div class="flex-row gap-4" style="margin-bottom: 0.75rem;">
             <input v-model="queryId" type="text" placeholder="请输入订单号 (如: SOS...)" class="input-field" style="flex-grow: 1;">
+            <input
+                v-model="phoneLast4"
+                type="text"
+                placeholder="手机号后四位"
+                class="input-field"
+                style="width: 9rem;"
+                maxlength="4"
+                inputmode="numeric"
+            >
             <button @click="query" class="market-btn primary-action" style="padding: 0 1.5rem;">查询</button>
         </div>
+        <p style="margin: 0 0 1.5rem 0; color: #9ca3af; font-size: 0.8rem;">
+            为保护隐私，查询需同时验证下单手机号后四位
+        </p>
 
         <div v-if="error" style="background: #fef2f2; padding: 1.5rem; border-radius: var(--radius-md); text-align: center; color: #dc2626;">
             <i class="fa fa-exclamation-circle" style="font-size: 1.5rem; margin-bottom: 0.5rem;"></i>
@@ -78,12 +90,18 @@ import { useRoute } from 'vue-router'
 
 const route = useRoute()
 const queryId = ref('')
+const phoneLast4 = ref('')
 const order = ref(null)
 const error = ref(null)
 
 onMounted(() => {
     if (route.query.id) {
         queryId.value = route.query.id
+    }
+    if (route.query.phoneLast4) {
+        phoneLast4.value = String(route.query.phoneLast4)
+    }
+    if (queryId.value && /^\d{4}$/.test(phoneLast4.value)) {
         query()
     }
 })
@@ -105,10 +123,16 @@ const statusStyle = computed(() => {
 
 const query = async () => {
     if (!queryId.value.trim()) return
+    if (!/^\d{4}$/.test(phoneLast4.value.trim())) {
+        error.value = '请输入手机号后四位数字'
+        order.value = null
+        return
+    }
     error.value = null
     order.value = null
     try {
-        const res = await fetch(`/api/orders/${queryId.value.trim()}`)
+        const params = new URLSearchParams({ phoneLast4: phoneLast4.value.trim() })
+        const res = await fetch(`/api/orders/${queryId.value.trim()}?${params.toString()}`)
         if (!res.ok) {
             const data = await res.json()
             error.value = data.error || '查询失败'

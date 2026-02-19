@@ -69,11 +69,46 @@
                 <span style="color: #666;">运费 (智能组合)</span>
                 <span>¥{{ shippingFee }}</span>
             </div>
+            <div style="margin: 0.75rem 0; padding: 0.75rem; background: #f9fafb; border: 1px dashed #d1d5db; border-radius: 8px;">
+                <div style="font-size: 0.85rem; color: #4b5563; margin-bottom: 0.5rem;">优惠券</div>
+                <div style="display: flex; gap: 0.5rem;">
+                    <input
+                        v-model.trim="couponCode"
+                        class="input-field"
+                        style="margin: 0; height: 2.25rem; flex: 1;"
+                        maxlength="40"
+                        placeholder="输入优惠券码"
+                    >
+                    <button
+                        class="market-btn primary-action"
+                        style="white-space: nowrap; height: 2.25rem;"
+                        :disabled="isApplyingCoupon || !couponCode"
+                        @click="applyCoupon"
+                    >
+                        {{ isApplyingCoupon ? '校验中...' : '使用' }}
+                    </button>
+                    <button
+                        v-if="appliedCoupon"
+                        class="market-btn btn-ghost"
+                        style="white-space: nowrap; height: 2.25rem;"
+                        @click="clearCoupon"
+                    >
+                        清除
+                    </button>
+                </div>
+                <div v-if="appliedCoupon" style="margin-top: 0.5rem; font-size: 0.75rem; color: #16a34a;">
+                    已应用: {{ appliedCoupon.code }} ({{ appliedCoupon.benefitText }})
+                </div>
+            </div>
+            <div v-if="discountAmount > 0" class="summary-row">
+                <span style="color: #666;">优惠减免</span>
+                <span style="color: #16a34a;">-¥{{ discountAmount }}</span>
+            </div>
             <div class="total-row">
                 <span style="font-weight: bold; color: #374151;">应付总额</span>
-                <span class="total-price">¥{{ finalTotal }}</span>
+                <span class="total-price">¥{{ payableTotal }}</span>
             </div>
-            <button @click="submitOrder" :disabled="isSubmitting" class="market-btn primary-action" style="width: 100%; margin-top: 1.5rem; padding: 0.75rem;">
+            <button @click="submitOrder" :disabled="isSubmitting || isApplyingCoupon" class="market-btn primary-action" style="width: 100%; margin-top: 1.5rem; padding: 0.75rem;">
                 {{ isSubmitting ? '提交中...' : '提交订单' }}
             </button>
         </div>
@@ -82,7 +117,7 @@
 </template>
 
 <script setup>
-import { reactive, computed, ref, onMounted } from 'vue'
+import { reactive, computed, ref, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useShopStore } from '@/stores/shopStore'
 import { getAddressData } from '@/utils/chinaDivision'
@@ -93,11 +128,16 @@ const form = reactive({ name: '', phone: '', email: '', province: '', city: '', 
 const isSubmitting = ref(false)
 const addressData = ref([])
 const loadingAddress = ref(false)
+const couponCode = ref('')
+const appliedCoupon = ref(null)
+const isApplyingCoupon = ref(false)
 
 const cart = computed(() => store.state.cart)
 const cartTotal = store.cartTotal
 const shippingFee = store.shippingFee
-const finalTotal = store.finalTotal
+const orderOriginalTotal = computed(() => Number((cartTotal.value + shippingFee.value).toFixed(2)))
+const discountAmount = computed(() => Number(appliedCoupon.value?.discountAmount || 0))
+const payableTotal = computed(() => Number(Math.max(0, orderOriginalTotal.value - discountAmount.value).toFixed(2)))
 
 // 加载地址数据
 onMounted(async () => {
@@ -128,6 +168,44 @@ const validateForm = () => {
     return null
 }
 
+const clearCoupon = () => {
+    appliedCoupon.value = null
+    couponCode.value = ''
+}
+
+const applyCoupon = async () => {
+    if (!couponCode.value) {
+        store.showNotification('请输入优惠券码')
+        return
+    }
+    if (cart.value.length === 0) {
+        store.showNotification('购物车为空，无法使用优惠券')
+        return
+    }
+
+    isApplyingCoupon.value = true
+    const result = await store.previewCoupon({
+        code: couponCode.value,
+        orderAmount: orderOriginalTotal.value
+    })
+    isApplyingCoupon.value = false
+
+    if (!result.ok) {
+        store.showNotification(result.error || '优惠券不可用')
+        return
+    }
+
+    appliedCoupon.value = result.data
+    couponCode.value = result.data.code
+    store.showNotification(`优惠券生效，立减 ¥${result.data.discountAmount}`)
+}
+
+watch([cartTotal, shippingFee], () => {
+    if (!appliedCoupon.value) return
+    appliedCoupon.value = null
+    store.showNotification('订单金额已变化，请重新校验优惠券')
+})
+
 const submitOrder = async () => {
     const error = validateForm()
     if (error) {
@@ -139,21 +217,31 @@ const submitOrder = async () => {
     isSubmitting.value = true
     
     const now = new Date()
-    const id = `SOS-${now.getFullYear()}${(now.getMonth()+1).toString().padStart(2,'0')}${now.getDate()}-${Math.floor(Math.random()*10000)}`
+    const datePart = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`
+    const timePart = `${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}${String(now.getSeconds()).padStart(2, '0')}${String(now.getMilliseconds()).padStart(3, '0')}`
+    const randPart = Math.random().toString(36).slice(2, 6).toUpperCase()
+    const id = `SOS-${datePart}-${timePart}-${randPart}`
     
     const orderData = {
         id,
         items: cart.value,
         contact: form,
-        total: finalTotal.value
+        total: payableTotal.value,
+        couponCode: appliedCoupon.value?.code || ''
     }
 
-    const success = await store.createOrderBackend(orderData)
+    const createdOrder = await store.createOrderBackend(orderData)
     
     isSubmitting.value = false
     
-    if (success) {
-        store.setOrder(orderData)
+    if (createdOrder) {
+        store.setOrder({
+            ...orderData,
+            total: createdOrder.total ?? payableTotal.value,
+            originalTotal: createdOrder.originalTotal ?? orderOriginalTotal.value,
+            discountAmount: createdOrder.discountAmount ?? discountAmount.value,
+            couponCode: createdOrder.couponCode || appliedCoupon.value?.code || null
+        })
         store.clearCart()
         router.push('/payment')
     }
@@ -178,4 +266,5 @@ textarea.input-field { resize: none; height: 6rem; }
 .summary-row { display: flex; justify-content: space-between; font-size: 0.875rem; margin-bottom: 0.5rem; }
 .total-row { display: flex; justify-content: space-between; align-items: flex-end; border-top: 1px solid #eee; padding-top: 1rem; margin-top: 1rem; }
 .total-price { font-size: 1.5rem; font-weight: bold; color: var(--primary-color); }
+.market-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 </style>

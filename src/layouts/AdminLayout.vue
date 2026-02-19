@@ -16,24 +16,27 @@
             <router-link to="/admin/products" class="nav-item" active-class="active">
                 <i class="fa fa-box" style="width: 1.5rem;"></i> 商品库
             </router-link>
+            <router-link to="/admin/coupons" class="nav-item" active-class="active">
+                <i class="fa fa-ticket-alt" style="width: 1.5rem;"></i> 优惠券
+            </router-link>
             <router-link to="/admin/stats" class="nav-item" active-class="active">
                 <i class="fa fa-chart-bar" style="width: 1.5rem;"></i> 数据统计
             </router-link>
             
             <div class="nav-label">系统</div>
-            <a class="nav-item">
+            <router-link to="/admin/settings" class="nav-item" active-class="active">
                 <i class="fa fa-cog" style="width: 1.5rem;"></i> 设置
-            </a>
+            </router-link>
         </nav>
         <div class="sidebar-footer">北高文艺部内部系统 v1.1</div>
     </aside>
 
     <main class="main-wrapper">
         <header class="top-header">
-            <h2 class="page-heading">{{ route.name === 'admin-dashboard' ? '总览看板' : (route.name === 'admin-products' ? '商品库' : '管理后台') }}</h2>
+            <h2 class="page-heading">{{ pageTitle }}</h2>
             <div class="user-profile">
                 <span class="user-info">管理员: <strong>长门有希</strong></span>
-                <button class="logout-btn" @click="$router.push('/')"><i class="fa fa-sign-out-alt"></i></button>
+                <button class="logout-btn" @click="logout"><i class="fa fa-sign-out-alt"></i></button>
             </div>
         </header>
         <div class="content-scroll">
@@ -44,8 +47,25 @@
 </template>
 
 <script setup>
+import { computed } from 'vue'
 import { useRoute } from 'vue-router'
+import { clearAdminToken } from '@/utils/adminAuth'
 import '@/assets/admin.css'
 
 const route = useRoute()
+const pageTitleMap = {
+    'admin-dashboard': '总览看板',
+    'admin-orders': '订单管理',
+    'admin-products': '商品库',
+    'admin-coupons': '优惠券管理',
+    'admin-stats': '数据统计',
+    'admin-settings': '系统设置'
+}
+
+const pageTitle = computed(() => pageTitleMap[route.name] || '管理后台')
+
+const logout = () => {
+    clearAdminToken()
+    window.location.href = '/admin/login'
+}
 </script>

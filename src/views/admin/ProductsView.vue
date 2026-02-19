@@ -17,7 +17,10 @@
                     <td><img :src="p.image" style="width: 40px; height: 40px; object-fit: cover; border-radius: 4px;"></td>
                     <td style="font-weight: 500;">{{ p.name }}</td>
                     <td><span class="status-badge status-2">{{ p.category }}</span></td>
-                    <td>¥{{ p.price }}</td>
+                    <td>
+                        <div style="font-weight: bold;">¥{{ getDisplayPrice(p) }}</div>
+                        <div v-if="hasDiscount(p)" class="text-sub" style="text-decoration: line-through;">原价 ¥{{ p.price }}</div>
+                    </td>
                     <td :style="{color: p.stock < 10 ? 'red' : 'inherit', fontWeight: 'bold'}">{{ p.stock }}</td>
                     <td class="text-sub">{{ p.shippingTag }}</td>
                     <td class="text-sub">¥{{ p.shippingCost }}</td>
@@ -51,6 +54,7 @@
 
                 <!-- 第二行：价格库存 -->
                 <div><label class="form-label">价格 (¥)</label><input v-model.number="form.price" class="form-input" type="number"></div>
+                <div><label class="form-label">折扣价 (¥)</label><input v-model="form.discountPrice" class="form-input" type="number" min="0" step="0.01" placeholder="留空表示不打折"></div>
                 <div><label class="form-label">库存</label><input v-model.number="form.stock" class="form-input" type="number"></div>
                 
                 <!-- 第三行：运费 -->
@@ -122,6 +126,7 @@ const isEdit = ref(false)
 // 表单初始状态
 const initialForm = {
     id: null, name: '', price: 0, category: '', stock: 100,
+    discountPrice: '',
     image: '', desc: '',
     specs: [], detailText: '', detailImages: [],
     shippingTag: '深圳', shippingCost: 0
@@ -137,6 +142,7 @@ const openModal = (product = null) => {
         // 深度拷贝以避免引用问题，特别是数组
         const p = JSON.parse(JSON.stringify(product))
         Object.assign(form, p)
+        form.discountPrice = p.discountPrice ?? ''
         // 确保数组存在
         if (!form.specs) form.specs = []
         if (!form.detailImages) form.detailImages = []
@@ -165,12 +171,38 @@ const addSpec = () => form.specs.push({ key: '', val: '' })
 const removeSpec = (idx) => form.specs.splice(idx, 1)
 const removeDetailImg = (idx) => form.detailImages.splice(idx, 1)
 
+const hasDiscount = (product) => {
+    const base = Number(product?.price)
+    const discount = Number(product?.discountPrice)
+    return Number.isFinite(discount) && discount > 0 && (!Number.isFinite(base) || discount < base)
+}
+
+const getDisplayPrice = (product) => (hasDiscount(product) ? Number(product.discountPrice) : Number(product.price))
+
 const save = async () => {
+    const payload = { ...form }
+    if (payload.discountPrice === '' || payload.discountPrice === null || payload.discountPrice === undefined) {
+        payload.discountPrice = null
+    } else {
+        payload.discountPrice = Number(payload.discountPrice)
+    }
+
+    if (payload.discountPrice !== null) {
+        if (!Number.isFinite(payload.discountPrice) || payload.discountPrice <= 0) {
+            store.showNotification('折扣价必须大于0')
+            return
+        }
+        if (payload.discountPrice >= Number(payload.price)) {
+            store.showNotification('折扣价需小于原价')
+            return
+        }
+    }
+
     let success = false
     if (isEdit.value) {
-        success = await store.updateProduct(form.id, form)
+        success = await store.updateProduct(form.id, payload)
     } else {
-        success = await store.addProduct(form)
+        success = await store.addProduct(payload)
     }
     if (success) showModal.value = false
 }

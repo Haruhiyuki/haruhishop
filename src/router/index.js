@@ -1,10 +1,13 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import ShopLayout from '../layouts/ShopLayout.vue'
 import AdminLayout from '../layouts/AdminLayout.vue'
+import { trackEvent } from '@/utils/analytics'
+import { hasValidAdminToken } from '@/utils/adminAuth'
 
 const router = createRouter({
   history: createWebHistory(),
   routes: [
+    { path: '/admin/login', name: 'admin-login', component: () => import('../views/admin/AdminLoginView.vue') },
     // 前台商城路由
     {
       path: '/',
@@ -29,13 +32,49 @@ const router = createRouter({
         { path: 'dashboard', name: 'admin-dashboard', component: () => import('../views/admin/DashboardView.vue') },
         { path: 'orders', name: 'admin-orders', component: () => import('../views/admin/OrdersView.vue') },
         { path: 'products', name: 'admin-products', component: () => import('../views/admin/ProductsView.vue') }, // 新增路由
-        { path: 'stats', name: 'admin-stats', component: () => import('../views/admin/StatsView.vue') }
+        { path: 'coupons', name: 'admin-coupons', component: () => import('../views/admin/CouponsView.vue') },
+        { path: 'stats', name: 'admin-stats', component: () => import('../views/admin/StatsView.vue') },
+        { path: 'settings', name: 'admin-settings', component: () => import('../views/admin/SettingsView.vue') }
       ]
     }
   ],
   scrollBehavior(to, from, savedPosition) {
     return { top: 0 }
   }
+})
+
+router.beforeEach((to) => {
+  const isAdminRoute = to.path.startsWith('/admin')
+  if (!isAdminRoute) return true
+
+  if (to.name === 'admin-login') {
+    if (hasValidAdminToken()) return { path: '/admin/dashboard' }
+    return true
+  }
+
+  if (!hasValidAdminToken()) {
+    return { path: '/admin/login', query: { redirect: to.fullPath } }
+  }
+
+  return true
+})
+
+const routeEventMap = {
+  home: 'home_view',
+  product: 'product_view',
+  cart: 'cart_view',
+  checkout: 'checkout_view',
+  payment: 'payment_view',
+  success: 'success_view',
+  query: 'order_query_view',
+  contact: 'contact_view'
+}
+
+router.afterEach((to) => {
+  if (to.path.startsWith('/admin')) return
+  const eventKey = routeEventMap[to.name]
+  if (!eventKey) return
+  trackEvent(eventKey, { routeName: to.name })
 })
 
 export default router

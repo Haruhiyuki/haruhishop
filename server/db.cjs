@@ -4,12 +4,31 @@ const path = require('path');
 const dbPath = path.resolve(__dirname, 'shop.db');
 const db = new sqlite3.Database(dbPath);
 
+const ensureColumn = (tableName, columnName, columnDef) => {
+    db.all(`PRAGMA table_info(${tableName})`, [], (err, rows) => {
+        if (err) {
+            console.error(`Failed to inspect table ${tableName}:`, err.message);
+            return;
+        }
+
+        const exists = rows.some((row) => row.name === columnName);
+        if (exists) return;
+
+        db.run(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${columnDef}`, (alterErr) => {
+            if (alterErr) {
+                console.error(`Failed to add ${columnName} to ${tableName}:`, alterErr.message);
+            }
+        });
+    });
+};
+
 db.serialize(() => {
     // 商品表 (保持不变)
     db.run(`CREATE TABLE IF NOT EXISTS products (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT,
         price INTEGER,
+        discountPrice INTEGER,
         category TEXT,
         typeId TEXT,
         stock INTEGER,
@@ -27,6 +46,9 @@ db.serialize(() => {
     db.run(`CREATE TABLE IF NOT EXISTS orders (
         id TEXT PRIMARY KEY,
         total INTEGER,
+        originalTotal REAL DEFAULT 0,
+        discountAmount REAL DEFAULT 0,
+        couponCode TEXT,
         items TEXT,         -- JSON: 商品列表
         contactName TEXT,   -- 联系人
         contactPhone TEXT,  -- 电话
@@ -40,6 +62,54 @@ db.serialize(() => {
         status INTEGER DEFAULT 1,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )`);
+
+    // 埋点事件表: 用于转化率统计与行为分析
+    db.run(`CREATE TABLE IF NOT EXISTS analytics_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        sessionId TEXT,
+        eventKey TEXT,
+        page TEXT,
+        meta TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`);
+
+    db.run(`CREATE INDEX IF NOT EXISTS idx_analytics_event_key_time
+            ON analytics_events(eventKey, created_at)`);
+
+    db.run(`CREATE INDEX IF NOT EXISTS idx_analytics_session
+            ON analytics_events(sessionId)`);
+
+    db.run(`CREATE TABLE IF NOT EXISTS site_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`);
+
+    db.run(`CREATE TABLE IF NOT EXISTS coupons (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        code TEXT UNIQUE,
+        name TEXT,
+        batchNo TEXT,
+        minSpend REAL DEFAULT 0,
+        discountType TEXT DEFAULT 'amount',
+        discountValue REAL DEFAULT 0,
+        maxDiscount REAL,
+        status INTEGER DEFAULT 1,
+        expiresAt DATETIME,
+        usedOrderId TEXT,
+        used_at DATETIME,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`);
+
+    db.run(`CREATE INDEX IF NOT EXISTS idx_coupons_status_batch
+            ON coupons(status, batchNo)`);
+    db.run(`CREATE INDEX IF NOT EXISTS idx_coupons_code
+            ON coupons(code)`);
+
+    ensureColumn('products', 'discountPrice', 'INTEGER');
+    ensureColumn('orders', 'originalTotal', 'REAL DEFAULT 0');
+    ensureColumn('orders', 'discountAmount', 'REAL DEFAULT 0');
+    ensureColumn('orders', 'couponCode', 'TEXT');
 });
 
 module.exports = db;

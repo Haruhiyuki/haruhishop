@@ -17,7 +17,8 @@
                     <p class="detail-desc">{{ product.desc }}</p>
                     <div class="price-box">
                         <span style="font-size: 0.875rem; color: var(--primary-color);">应援价</span>
-                        <span class="price-current">¥{{ product.price }}</span>
+                        <span class="price-current">¥{{ getDisplayPrice(product) }}</span>
+                        <span v-if="hasDiscount(product)" class="price-original">¥{{ product.price }}</span>
                         <span class="tag-stock">现货</span>
                     </div>
                     <!-- [修改] 动态渲染参数表 -->
@@ -65,8 +66,6 @@
     <div class="content-card">
         <div class="tabs-header">
             <div class="tab-item active">商品详情</div>
-            <div class="tab-item">评价 (0)</div>
-            <div class="tab-item">售后说明</div>
         </div>
         <div class="tab-content">
             <!-- [修改] 渲染详情文案和详情图 -->
@@ -100,6 +99,8 @@ onMounted(() => {
 })
 
 const product = computed(() => store.state.products.find(p => p.id == route.params.id))
+const hasDiscount = (item) => store.hasProductDiscount(item)
+const getDisplayPrice = (item) => store.resolveProductPrice(item)
 
 const addToCart = () => {
     if(product.value) store.addToCart(product.value, quantity.value)

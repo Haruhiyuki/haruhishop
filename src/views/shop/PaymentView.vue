@@ -13,6 +13,9 @@
             </div>
             <label style="font-size: 0.75rem; color: #666; text-transform: uppercase; margin-bottom: 0.25rem;">应付金额</label>
             <div style="font-size: 1.875rem; font-weight: bold; color: #1f2937; margin-bottom: 0.5rem;">¥{{ order.total }}</div>
+            <div v-if="Number(order.discountAmount) > 0" style="font-size: 0.75rem; color: #6b7280; margin-bottom: 0.5rem;">
+                原价 ¥{{ order.originalTotal }}，优惠 -¥{{ order.discountAmount }}
+            </div>
             <div style="font-size: 0.75rem; color: #9ca3af; margin-top: auto;">* 请务必支付准确金额，多付金额将作为应援金归入团费</div>
         </div>
         <div class="qr-col">
@@ -28,8 +31,10 @@
                 </button>
             </div>
             <div class="qr-placeholder">
-                <div style="position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;">
-                    <i class="fa fa-qrcode" style="font-size: 4rem; color: #333; opacity: 0.8;"></i>
+                <img v-if="currentQrUrl" :src="currentQrUrl" :alt="payMethod === 'wechat' ? '微信收款码' : '支付宝收款码'" class="payment-qr-image">
+                <div v-else style="position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 0.25rem;">
+                    <i class="fa fa-qrcode" style="font-size: 2.5rem; color: #333; opacity: 0.7;"></i>
+                    <span style="font-size: 0.75rem; color: #6b7280;">后台未配置二维码</span>
                 </div>
             </div>
             <p style="font-size: 0.875rem; font-weight: bold; margin: 0;" :style="payMethod === 'wechat' ? 'color: #07c160;' : 'color: #1677ff;'">
@@ -37,6 +42,9 @@
             </p>
             <div style="margin-top: 0.75rem; font-size: 0.75rem; color: #4b5563;">
                 请备注: <span class="remark-code">{{ order.id.split('-').pop() }}</span>
+            </div>
+            <div style="margin-top: 0.5rem; font-size: 0.75rem; color: #6b7280;">
+                {{ paymentConfig.paymentNote }}
             </div>
         </div>
     </div>
@@ -57,10 +65,11 @@
         <div style="background: #fff; border-radius: 12px; padding: 2rem; max-width: 320px; width: 90%; text-align: center;">
             <h3 style="font-size: 1.125rem; font-weight: bold; color: #1f2937; margin: 0 0 0.75rem 0;">添加好友转账</h3>
             <div style="width: 180px; height: 180px; margin: 0 auto 1rem; background: #f3f4f6; border-radius: 8px; display: flex; align-items: center; justify-content: center;">
-                <i class="fab fa-weixin" style="font-size: 4rem; color: #07c160;"></i>
+                <img v-if="paymentConfig.friendQr" :src="paymentConfig.friendQr" alt="好友二维码" class="payment-qr-image">
+                <i v-else class="fab fa-weixin" style="font-size: 4rem; color: #07c160;"></i>
             </div>
             <p style="font-size: 0.875rem; color: #374151; line-height: 1.6; margin: 0 0 0.5rem 0;">
-                长按识别上方二维码添加好友
+                {{ paymentConfig.friendHelpText }}
             </p>
             <p style="font-size: 0.875rem; color: #374151; line-height: 1.6; margin: 0 0 1rem 0;">
                 转账时请备注订单号:
@@ -78,9 +87,10 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useShopStore } from '@/stores/shopStore'
+import { trackEvent } from '@/utils/analytics'
 
 const store = useShopStore()
 const router = useRouter()
@@ -88,6 +98,15 @@ const order = computed(() => store.state.currentOrder)
 
 const payMethod = ref('wechat')
 const helpModal = ref(false)
+const paymentConfig = computed(() => store.state.siteConfig?.payment || {})
+const currentQrUrl = computed(() => {
+    if (payMethod.value === 'wechat') return paymentConfig.value.wechatQr
+    return paymentConfig.value.alipayQr
+})
+
+onMounted(() => {
+    store.fetchSiteConfig(false)
+})
 
 const copy = (text) => {
     navigator.clipboard.writeText(text)
@@ -95,8 +114,24 @@ const copy = (text) => {
 }
 
 const confirmPay = async () => {
-    await store.updateOrderStatus(order.value.id, 5) // 5 = 待确认
+    if (!order.value?.id) {
+        store.showNotification('订单信息缺失，请重新下单')
+        router.push('/')
+        return
+    }
+    const success = await store.submitOrderPayment(order.value.id)
+    if (!success) return
+    trackEvent('payment_submitted', { orderId: order.value.id, payMethod: payMethod.value })
     store.clearCart()
     router.push('/success')
 }
 </script>
+
+<style scoped>
+.payment-qr-image {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    border-radius: 6px;
+}
+</style>

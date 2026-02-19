@@ -1,9 +1,68 @@
 import { reactive, computed } from 'vue'
+import { trackEvent } from '@/utils/analytics'
+import { buildAdminAuthHeaders, clearAdminToken, hasValidAdminToken, setAdminToken } from '@/utils/adminAuth'
 
 // 使用 Vite 代理路径
 const API_URL = '/api/products'
 const ORDER_URL = '/api/orders'
 const UPLOAD_URL = '/api/upload'
+const ADMIN_LOGIN_URL = '/api/admin/login'
+const SITE_CONFIG_URL = '/api/site-config'
+const ADMIN_SITE_CONFIG_URL = '/api/admin/site-config'
+const COUPON_PREVIEW_URL = '/api/coupons/preview'
+const ADMIN_COUPONS_URL = '/api/admin/coupons'
+const DEFAULT_SITE_CONFIG = Object.freeze({
+    payment: {
+        wechatQr: '',
+        alipayQr: '',
+        friendQr: '',
+        paymentNote: '请支付后备注订单号后四位，便于快速核销。',
+        friendHelpText: '长按识别二维码添加好友并转账，备注完整订单号。'
+    }
+})
+
+const normalizeDiscountPrice = (discountPrice, price) => {
+    const basePrice = Number(price)
+    const value = Number(discountPrice)
+    if (!Number.isFinite(value) || value <= 0) return null
+    if (Number.isFinite(basePrice) && basePrice > 0 && value >= basePrice) return null
+    return Number(value.toFixed(2))
+}
+
+const hasProductDiscount = (product) => normalizeDiscountPrice(product?.discountPrice, product?.price) !== null
+const resolveProductPrice = (product) => {
+    const discount = normalizeDiscountPrice(product?.discountPrice, product?.price)
+    if (discount !== null) return discount
+    const basePrice = Number(product?.price)
+    return Number.isFinite(basePrice) ? Number(basePrice.toFixed(2)) : 0
+}
+
+const normalizeProduct = (product = {}) => {
+    const basePrice = Number(product.price)
+    return {
+        ...product,
+        price: Number.isFinite(basePrice) ? Number(basePrice.toFixed(2)) : 0,
+        discountPrice: normalizeDiscountPrice(product.discountPrice, product.price),
+        shippingCost: Number.isFinite(Number(product.shippingCost)) ? Number(product.shippingCost) : 0
+    }
+}
+
+const normalizeSiteConfig = (rawConfig = {}) => {
+    const next = JSON.parse(JSON.stringify(DEFAULT_SITE_CONFIG))
+    const payment = rawConfig && typeof rawConfig === 'object' ? rawConfig.payment || {} : {}
+
+    next.payment.wechatQr = typeof payment.wechatQr === 'string' ? payment.wechatQr : ''
+    next.payment.alipayQr = typeof payment.alipayQr === 'string' ? payment.alipayQr : ''
+    next.payment.friendQr = typeof payment.friendQr === 'string' ? payment.friendQr : ''
+
+    if (typeof payment.paymentNote === 'string' && payment.paymentNote.trim()) {
+        next.payment.paymentNote = payment.paymentNote.trim()
+    }
+    if (typeof payment.friendHelpText === 'string' && payment.friendHelpText.trim()) {
+        next.payment.friendHelpText = payment.friendHelpText.trim()
+    }
+    return next
+}
 
 const state = reactive({
     cart: [],
@@ -11,13 +70,15 @@ const state = reactive({
     products: [], 
     currentOrder: null,
     notification: null,
-    adminOrders: [] // 确保后台订单列表状态存在
+    adminOrders: [], // 确保后台订单列表状态存在
+    adminCoupons: [],
+    siteConfig: normalizeSiteConfig()
 })
 
 export const useShopStore = () => {
     // --- 计算属性 ---
     const cartCount = computed(() => state.cart.reduce((acc, item) => acc + item.quantity, 0))
-    const cartTotal = computed(() => state.cart.reduce((acc, item) => acc + item.price * item.quantity, 0))
+    const cartTotal = computed(() => Number(state.cart.reduce((acc, item) => acc + item.price * item.quantity, 0).toFixed(2)))
     
     // 运费计算：按标签分组取最大值后累加
     const shippingFee = computed(() => {
@@ -44,20 +105,252 @@ export const useShopStore = () => {
 
     const setOrder = (order) => state.currentOrder = order
 
+    const handleAdminUnauthorized = () => {
+        clearAdminToken()
+        state.adminOrders = []
+        state.adminCoupons = []
+        showNotification('登录已失效，请重新登录')
+        if (typeof window !== 'undefined' && window.location.pathname.startsWith('/admin')) {
+            window.location.href = '/admin/login'
+        }
+    }
+
+    const ensureAdminAuth = () => {
+        if (hasValidAdminToken()) return true
+        showNotification('请先登录后台')
+        return false
+    }
+
+    const adminLogin = async (username, password) => {
+        try {
+            const res = await fetch(ADMIN_LOGIN_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username, password })
+            })
+            const data = await res.json().catch(() => ({}))
+            if (!res.ok) {
+                showNotification(data.error || '登录失败')
+                return false
+            }
+            if (!data.token) {
+                showNotification('登录响应异常')
+                return false
+            }
+            setAdminToken(data.token)
+            showNotification('登录成功')
+            return true
+        } catch (e) {
+            showNotification('登录失败，请检查网络')
+            return false
+        }
+    }
+
+    const adminLogout = () => {
+        clearAdminToken()
+        state.adminOrders = []
+        state.adminCoupons = []
+    }
+
     // --- 商品 API ---
     const fetchProducts = async () => {
         try {
             const res = await fetch(API_URL)
-            const data = await res.json()
-            state.products = data
+            const data = await res.json().catch(() => [])
+            if (!res.ok) {
+                showNotification(data.error || '商品加载失败')
+                return
+            }
+            state.products = Array.isArray(data) ? data.map(normalizeProduct) : []
         } catch (err) { console.error(err) }
     }
 
+    const fetchSiteConfig = async (admin = false) => {
+        const url = admin ? ADMIN_SITE_CONFIG_URL : SITE_CONFIG_URL
+        const headers = admin ? buildAdminAuthHeaders() : undefined
+
+        try {
+            const res = await fetch(url, headers ? { headers } : undefined)
+            const data = await res.json().catch(() => ({}))
+            if (res.status === 401 && admin) {
+                handleAdminUnauthorized()
+                return null
+            }
+            if (!res.ok) {
+                if (admin) showNotification(data.error || '站点配置加载失败')
+                return null
+            }
+            state.siteConfig = normalizeSiteConfig(data)
+            return state.siteConfig
+        } catch (err) {
+            if (admin) showNotification('站点配置加载失败')
+            return null
+        }
+    }
+
+    const updateSiteConfig = async (configPayload) => {
+        if (!ensureAdminAuth()) return false
+        try {
+            const res = await fetch(ADMIN_SITE_CONFIG_URL, {
+                method: 'PUT',
+                headers: buildAdminAuthHeaders({ 'Content-Type': 'application/json' }),
+                body: JSON.stringify(configPayload)
+            })
+            const data = await res.json().catch(() => ({}))
+            if (res.status === 401) {
+                handleAdminUnauthorized()
+                return false
+            }
+            if (!res.ok) {
+                showNotification(data.error || '保存配置失败')
+                return false
+            }
+
+            state.siteConfig = normalizeSiteConfig(data.config)
+            showNotification('配置已保存')
+            return true
+        } catch (err) {
+            showNotification('保存配置失败')
+            return false
+        }
+    }
+
+    const previewCoupon = async ({ code, orderAmount }) => {
+        try {
+            const res = await fetch(COUPON_PREVIEW_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ code, orderAmount })
+            })
+            const data = await res.json().catch(() => ({}))
+            if (!res.ok) return { ok: false, error: data.error || '优惠券不可用' }
+            return { ok: true, data }
+        } catch (err) {
+            return { ok: false, error: '网络错误，请稍后重试' }
+        }
+    }
+
+    const fetchAdminCoupons = async (filters = {}) => {
+        if (!ensureAdminAuth()) {
+            state.adminCoupons = []
+            return []
+        }
+
+        const search = new URLSearchParams()
+        if (filters.status !== undefined && filters.status !== null && String(filters.status) !== '') {
+            search.set('status', String(filters.status))
+        }
+        if (filters.batchNo) search.set('batchNo', String(filters.batchNo).trim())
+        if (filters.keyword) search.set('keyword', String(filters.keyword).trim())
+
+        const url = `${ADMIN_COUPONS_URL}${search.toString() ? `?${search.toString()}` : ''}`
+
+        try {
+            const res = await fetch(url, { headers: buildAdminAuthHeaders() })
+            const data = await res.json().catch(() => [])
+            if (res.status === 401) {
+                handleAdminUnauthorized()
+                return []
+            }
+            if (!res.ok) {
+                showNotification(data.error || '优惠券列表加载失败')
+                return []
+            }
+            state.adminCoupons = Array.isArray(data) ? data : []
+            return state.adminCoupons
+        } catch (err) {
+            showNotification('优惠券列表加载失败')
+            return []
+        }
+    }
+
+    const createCouponBatch = async (payload) => {
+        if (!ensureAdminAuth()) return null
+        try {
+            const res = await fetch(`${ADMIN_COUPONS_URL}/batch`, {
+                method: 'POST',
+                headers: buildAdminAuthHeaders({ 'Content-Type': 'application/json' }),
+                body: JSON.stringify(payload)
+            })
+            const data = await res.json().catch(() => ({}))
+            if (res.status === 401) {
+                handleAdminUnauthorized()
+                return null
+            }
+            if (!res.ok) {
+                showNotification(data.error || '创建优惠券失败')
+                return null
+            }
+            showNotification(`已创建 ${data.quantity || 0} 张优惠券`)
+            return data
+        } catch (err) {
+            showNotification('创建优惠券失败')
+            return null
+        }
+    }
+
+    const updateCouponStatus = async (id, status) => {
+        if (!ensureAdminAuth()) return false
+        try {
+            const res = await fetch(`${ADMIN_COUPONS_URL}/${id}/status`, {
+                method: 'PUT',
+                headers: buildAdminAuthHeaders({ 'Content-Type': 'application/json' }),
+                body: JSON.stringify({ status })
+            })
+            const data = await res.json().catch(() => ({}))
+            if (res.status === 401) {
+                handleAdminUnauthorized()
+                return false
+            }
+            if (!res.ok) {
+                showNotification(data.error || '状态更新失败')
+                return false
+            }
+            return true
+        } catch (err) {
+            showNotification('状态更新失败')
+            return false
+        }
+    }
+
+    const deleteCoupon = async (id) => {
+        if (!ensureAdminAuth()) return false
+        try {
+            const res = await fetch(`${ADMIN_COUPONS_URL}/${id}`, {
+                method: 'DELETE',
+                headers: buildAdminAuthHeaders()
+            })
+            const data = await res.json().catch(() => ({}))
+            if (res.status === 401) {
+                handleAdminUnauthorized()
+                return false
+            }
+            if (!res.ok) {
+                showNotification(data.error || '删除优惠券失败')
+                return false
+            }
+            showNotification('优惠券已删除')
+            return true
+        } catch (err) {
+            showNotification('删除优惠券失败')
+            return false
+        }
+    }
+
     const uploadImage = async (file) => {
+        if (!ensureAdminAuth()) return null
         const formData = new FormData()
         formData.append('file', file)
         try {
-            const res = await fetch(UPLOAD_URL, { method: 'POST', body: formData })
+            const res = await fetch(UPLOAD_URL, {
+                method: 'POST',
+                headers: buildAdminAuthHeaders(),
+                body: formData
+            })
+            if (res.status === 401) {
+                handleAdminUnauthorized()
+                return null
+            }
             if (res.ok) {
                 const data = await res.json()
                 return data.url
@@ -69,25 +362,55 @@ export const useShopStore = () => {
     }
 
     const addProduct = async (product) => {
+        if (!ensureAdminAuth()) return false
         try {
-            const res = await fetch(API_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(product) })
+            const res = await fetch(API_URL, {
+                method: 'POST',
+                headers: buildAdminAuthHeaders({ 'Content-Type': 'application/json' }),
+                body: JSON.stringify(product)
+            })
+            const data = await res.json().catch(() => ({}))
+            if (res.status === 401) {
+                handleAdminUnauthorized()
+                return false
+            }
             if (res.ok) { await fetchProducts(); showNotification('商品添加成功'); return true }
+            showNotification(data.error || '添加失败')
         } catch(e) { showNotification('添加失败'); }
         return false
     }
 
     const updateProduct = async (id, product) => {
+        if (!ensureAdminAuth()) return false
         try {
-            const res = await fetch(`${API_URL}/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(product) })
+            const res = await fetch(`${API_URL}/${id}`, {
+                method: 'PUT',
+                headers: buildAdminAuthHeaders({ 'Content-Type': 'application/json' }),
+                body: JSON.stringify(product)
+            })
+            const data = await res.json().catch(() => ({}))
+            if (res.status === 401) {
+                handleAdminUnauthorized()
+                return false
+            }
             if (res.ok) { await fetchProducts(); showNotification('商品更新成功'); return true }
+            showNotification(data.error || '更新失败')
         } catch(e) { showNotification('更新失败'); }
         return false
     }
 
     const deleteProduct = async (id) => {
+        if (!ensureAdminAuth()) return
         if (!confirm('确定删除?')) return
         try {
-            await fetch(`${API_URL}/${id}`, { method: 'DELETE' })
+            const res = await fetch(`${API_URL}/${id}`, {
+                method: 'DELETE',
+                headers: buildAdminAuthHeaders()
+            })
+            if (res.status === 401) {
+                handleAdminUnauthorized()
+                return
+            }
             await fetchProducts()
             showNotification('已删除')
         } catch(e) { showNotification('删除失败'); }
@@ -95,10 +418,27 @@ export const useShopStore = () => {
 
     // --- 购物车逻辑 ---
     const addToCart = (product, qty = 1) => {
+        const count = Number(qty)
+        if (!Number.isFinite(count) || count <= 0) return
+
+        const salePrice = resolveProductPrice(product)
+        const originalPrice = Number(product.price) || salePrice
         const existingItem = state.cart.find(item => item.id === product.id)
-        if (existingItem) { existingItem.quantity += qty } 
-        else { state.cart.push({ ...product, quantity: qty, shippingTag: product.shippingTag, shippingCost: product.shippingCost }) }
+        if (existingItem) {
+            existingItem.quantity += count
+        } else {
+            state.cart.push({
+                ...product,
+                quantity: count,
+                price: salePrice,
+                originalPrice,
+                discountPrice: normalizeDiscountPrice(product.discountPrice, product.price),
+                shippingTag: product.shippingTag,
+                shippingCost: Number(product.shippingCost) || 0
+            })
+        }
         showNotification('已加入购物车')
+        trackEvent('add_to_cart', { productId: product.id, quantity: count })
     }
 
     const removeFromCart = (index) => state.cart.splice(index, 1)
@@ -112,41 +452,94 @@ export const useShopStore = () => {
             const res = await fetch(ORDER_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(orderData) })
             const data = await res.json()
             if (!res.ok) throw new Error(data.error || '创建订单失败')
-            return true
+            trackEvent('order_submitted', {
+                orderId: orderData.id,
+                total: data.total || orderData.total,
+                itemCount: (orderData.items || []).length
+            })
+            return data
         } catch (e) {
             showNotification(e.message)
-            return false
+            return null
         }
     }
 
     // 后台：获取订单列表
     const fetchAdminOrders = async (status = 'all') => {
+        if (!ensureAdminAuth()) {
+            state.adminOrders = []
+            return
+        }
         try {
-            const res = await fetch(`${ORDER_URL}?status=${status}`)
+            const res = await fetch(`${ORDER_URL}?status=${status}`, {
+                headers: buildAdminAuthHeaders()
+            })
+            if (res.status === 401) {
+                handleAdminUnauthorized()
+                return
+            }
             if (res.ok) {
                 state.adminOrders = await res.json()
             }
         } catch (e) { console.error("Fetch orders failed", e) }
     }
 
+    // 前台：用户提交支付凭证 (待付款 -> 待确认)
+    const submitOrderPayment = async (id) => {
+        try {
+            const res = await fetch(`${ORDER_URL}/${id}/payment`, { method: 'POST' })
+            const data = await res.json().catch(() => ({}))
+            if (!res.ok) {
+                showNotification(data.error || '提交支付失败')
+                return false
+            }
+            return true
+        } catch (e) {
+            showNotification('网络错误')
+            return false
+        }
+    }
+
     // 后台：更新订单状态
-    const updateOrderStatus = async (id, status, tracking = {}) => {
+    const updateOrderStatus = async (id, status, tracking = {}, statusFilter = null) => {
+        if (!ensureAdminAuth()) return false
         try {
             const payload = { status, ...tracking }
-            const res = await fetch(`${ORDER_URL}/${id}/status`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
-            if (res.ok) {
-                await fetchAdminOrders() // 刷新列表
-                showNotification('订单状态已更新')
-            } else {
-                showNotification('状态更新失败')
+            const res = await fetch(`${ORDER_URL}/${id}/status`, {
+                method: 'PUT',
+                headers: buildAdminAuthHeaders({ 'Content-Type': 'application/json' }),
+                body: JSON.stringify(payload)
+            })
+            if (res.status === 401) {
+                handleAdminUnauthorized()
+                return false
             }
-        } catch (e) { showNotification('网络错误') }
+            if (res.ok) {
+                if (statusFilter !== null) {
+                    await fetchAdminOrders(statusFilter) // 仅后台页按当前筛选刷新列表
+                }
+                showNotification('订单状态已更新')
+                return true
+            } else {
+                const data = await res.json().catch(() => ({}))
+                showNotification(data.error || '状态更新失败')
+                return false
+            }
+        } catch (e) {
+            showNotification('网络错误')
+            return false
+        }
     }
 
     return {
         state, cartCount, cartTotal, shippingFee, finalTotal,
         setProductType, addToCart, removeFromCart, clearCart, showNotification, setOrder,
         fetchProducts, addProduct, updateProduct, deleteProduct, uploadImage, 
-        createOrderBackend, fetchAdminOrders, updateOrderStatus
+        createOrderBackend, submitOrderPayment,
+        fetchAdminOrders, updateOrderStatus,
+        previewCoupon, fetchAdminCoupons, createCouponBatch, updateCouponStatus, deleteCoupon,
+        fetchSiteConfig, updateSiteConfig,
+        resolveProductPrice, hasProductDiscount,
+        adminLogin, adminLogout
     }
 }
