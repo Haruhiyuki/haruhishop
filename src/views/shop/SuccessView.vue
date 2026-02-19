@@ -3,7 +3,7 @@
     <div class="icon-circle"><i class="fa fa-clock"></i></div>
     <h2 style="font-size: 1.875rem; font-weight: bold; color: #1f2937; margin-bottom: 1rem;">支付已提交审核</h2>
     <p style="color: #4b5563; margin-bottom: 0.5rem;">感谢您对应援团的支持！</p>
-    <p style="font-size: 0.875rem; color: #6b7280; margin-bottom: 2rem;">管理员正在核对账单中，确认无误后将通过短信通知您并发货。</p>
+    <p style="font-size: 0.875rem; color: #6b7280; margin-bottom: 2rem;">欢迎加入春日商城客服QQ群：<a href="https://qm.qq.com/q/o2J6WGZGka" target="_blank">965630594</a></p>
     <div class="flex-row justify-center gap-4" style="justify-content: center;">
         <button class="market-btn primary-action" @click="$router.push({ path: '/query', query: { id: orderId } })">查看订单详情</button>
         <button class="market-btn btn-ghost" @click="$router.push('/')">返回首页</button>

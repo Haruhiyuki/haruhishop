@@ -16,7 +16,7 @@
             <div v-if="Number(order.discountAmount) > 0" style="font-size: 0.75rem; color: #6b7280; margin-bottom: 0.5rem;">
                 原价 ¥{{ order.originalTotal }}，优惠 -¥{{ order.discountAmount }}
             </div>
-            <div style="font-size: 0.75rem; color: #9ca3af; margin-top: auto;">* 请务必支付准确金额，多付金额将作为应援金归入团费</div>
+            <div style="font-size: 0.75rem; color: #9ca3af; margin-top: auto;">* 请务必支付准确金额</div>
         </div>
         <div class="qr-col">
             <!-- 支付方式切换 -->
@@ -49,7 +49,7 @@
         </div>
     </div>
 
-    <p style="font-size: 0.75rem; color: #9ca3af; margin: 0 0 1.5rem 0; text-align: center;">管理员将在每晚 22:00 统一核对账单并更新状态</p>
+    <p style="font-size: 0.75rem; color: #9ca3af; margin: 0 0 1.5rem 0; text-align: center;">管理员核对账单将有一定延迟，如果订单长期为确认，请联系我们。</p>
 
     <div class="flex-row gap-4" style="justify-content: center;">
         <button class="market-btn btn-ghost" style="padding: 0.5rem 1.5rem;" @click="helpModal = true">

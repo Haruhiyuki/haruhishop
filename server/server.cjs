@@ -43,6 +43,23 @@ loadEnvFile(path.resolve(__dirname, '..', '.env'));
 const app = express();
 const PORT = 13221;
 
+const normalizeApiPrefix = (value) => {
+    const raw = String(value || '/shop-api').trim();
+    if (!raw) return '/shop-api';
+    const normalized = raw.startsWith('/') ? raw : `/${raw}`;
+    return normalized.replace(/\/+$/, '') || '/shop-api';
+};
+
+const API_PREFIX = normalizeApiPrefix(process.env.API_PREFIX || '/shop-api');
+const API_UPLOADS_PATH = `${API_PREFIX}/uploads`;
+const LEGACY_API_UPLOADS_PREFIX = '/api/uploads/';
+
+const apiPath = (routePath = '') => {
+    const clean = String(routePath || '').trim();
+    if (!clean || clean === '/') return API_PREFIX;
+    return `${API_PREFIX}/${clean.replace(/^\/+/, '')}`;
+};
+
 const uploadDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir);
 
@@ -57,7 +74,7 @@ const upload = multer({ storage: storage });
 
 app.use(cors());
 app.use(bodyParser.json());
-app.use('/api/uploads', express.static(uploadDir));
+app.use(apiPath('/uploads'), express.static(uploadDir));
 
 function safeParse(str, fallback) {
     try { return JSON.parse(str); } catch { return fallback; }
@@ -78,6 +95,7 @@ const ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'admin';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123456';
 const ADMIN_AUTH_SECRET = process.env.ADMIN_AUTH_SECRET || 'sos-admin-auth-secret-change-me';
 const ADMIN_TOKEN_TTL_SECONDS = Number(process.env.ADMIN_TOKEN_TTL_SECONDS || 24 * 60 * 60);
+const FREE_SHIPPING_THRESHOLD = Math.max(0, Number(process.env.FREE_SHIPPING_THRESHOLD || 150));
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const LOGIN_WINDOW_MS = 10 * 60 * 1000;
 const LOGIN_MAX_ATTEMPTS = 10;
@@ -136,7 +154,11 @@ const sanitizeConfigText = (value, maxLength = 300) => {
 const sanitizeConfigUrl = (value) => {
     const clean = sanitizeConfigText(value, 500);
     if (!clean) return '';
-    if (/^(https?:\/\/|\/api\/uploads\/)/i.test(clean)) return clean;
+    if (/^https?:\/\//i.test(clean)) return clean;
+    if (clean.startsWith(`${API_UPLOADS_PATH}/`)) return clean;
+    if (clean.startsWith(LEGACY_API_UPLOADS_PREFIX)) {
+        return `${API_UPLOADS_PATH}/${clean.slice(LEGACY_API_UPLOADS_PREFIX.length)}`;
+    }
     return '';
 };
 
@@ -386,7 +408,8 @@ const calculateOrderPricing = (normalizedItems, productRowsById) => {
     }
 
     productsTotal = roundMoney(productsTotal);
-    const shippingFee = roundMoney(Object.values(shippingGroups).reduce((sum, fee) => sum + Number(fee || 0), 0));
+    const rawShippingFee = roundMoney(Object.values(shippingGroups).reduce((sum, fee) => sum + Number(fee || 0), 0));
+    const shippingFee = productsTotal >= FREE_SHIPPING_THRESHOLD ? 0 : rawShippingFee;
     const originalTotal = roundMoney(productsTotal + shippingFee);
 
     return {
@@ -577,7 +600,7 @@ function getPeriodRangeForProductReport(period) {
     return { error: 'period 参数无效' };
 }
 
-app.post('/api/admin/login', (req, res) => {
+app.post(apiPath('/admin/login'), (req, res) => {
     const clientIp = req.ip || req.socket?.remoteAddress || 'unknown';
     if (isLoginRateLimited(clientIp)) {
         return res.status(429).json({ error: '登录尝试过于频繁，请稍后再试' });
@@ -612,14 +635,14 @@ app.post('/api/admin/login', (req, res) => {
     });
 });
 
-app.get('/api/admin/me', requireAdminAuth, (req, res) => {
+app.get(apiPath('/admin/me'), requireAdminAuth, (req, res) => {
     res.json({
         user: { name: req.admin.sub || ADMIN_USERNAME },
         exp: req.admin.exp
     });
 });
 
-app.get('/api/site-config', async (req, res) => {
+app.get(apiPath('/site-config'), async (req, res) => {
     try {
         const config = await loadSiteConfig();
         res.json(config);
@@ -628,7 +651,7 @@ app.get('/api/site-config', async (req, res) => {
     }
 });
 
-app.get('/api/admin/site-config', requireAdminAuth, async (req, res) => {
+app.get(apiPath('/admin/site-config'), requireAdminAuth, async (req, res) => {
     try {
         const config = await loadSiteConfig();
         res.json(config);
@@ -637,7 +660,7 @@ app.get('/api/admin/site-config', requireAdminAuth, async (req, res) => {
     }
 });
 
-app.put('/api/admin/site-config', requireAdminAuth, async (req, res) => {
+app.put(apiPath('/admin/site-config'), requireAdminAuth, async (req, res) => {
     try {
         const config = await saveSiteConfig(req.body || {});
         res.json({ success: true, config });
@@ -646,7 +669,7 @@ app.put('/api/admin/site-config', requireAdminAuth, async (req, res) => {
     }
 });
 
-app.post('/api/coupons/preview', async (req, res) => {
+app.post(apiPath('/coupons/preview'), async (req, res) => {
     const code = normalizeCouponCode(req.body?.code);
     const orderAmount = Number(req.body?.orderAmount);
 
@@ -678,7 +701,7 @@ app.post('/api/coupons/preview', async (req, res) => {
     }
 });
 
-app.get('/api/admin/coupons', requireAdminAuth, async (req, res) => {
+app.get(apiPath('/admin/coupons'), requireAdminAuth, async (req, res) => {
     const status = String(req.query.status || 'all');
     const batchNo = sanitizeConfigText(req.query.batchNo || '', 80);
     const keyword = sanitizeConfigText(req.query.keyword || '', 80);
@@ -746,7 +769,7 @@ app.get('/api/admin/coupons', requireAdminAuth, async (req, res) => {
     }
 });
 
-app.post('/api/admin/coupons/batch', requireAdminAuth, async (req, res) => {
+app.post(apiPath('/admin/coupons/batch'), requireAdminAuth, async (req, res) => {
     const quantity = Number(req.body?.quantity);
     const prefix = normalizeCouponPrefix(req.body?.prefix);
     const customBatchNo = sanitizeConfigText(req.body?.batchNo || '', 30).toUpperCase();
@@ -818,7 +841,7 @@ app.post('/api/admin/coupons/batch', requireAdminAuth, async (req, res) => {
     }
 });
 
-app.put('/api/admin/coupons/:id/status', requireAdminAuth, async (req, res) => {
+app.put(apiPath('/admin/coupons/:id/status'), requireAdminAuth, async (req, res) => {
     const couponId = Number(req.params.id);
     const status = Number(req.body?.status);
     if (!Number.isInteger(couponId) || couponId <= 0) {
@@ -842,7 +865,7 @@ app.put('/api/admin/coupons/:id/status', requireAdminAuth, async (req, res) => {
     }
 });
 
-app.delete('/api/admin/coupons/:id', requireAdminAuth, async (req, res) => {
+app.delete(apiPath('/admin/coupons/:id'), requireAdminAuth, async (req, res) => {
     const couponId = Number(req.params.id);
     if (!Number.isInteger(couponId) || couponId <= 0) {
         return res.status(400).json({ error: '优惠券ID无效' });
@@ -862,8 +885,115 @@ app.delete('/api/admin/coupons/:id', requireAdminAuth, async (req, res) => {
     }
 });
 
+app.post(apiPath('/contact/messages'), async (req, res) => {
+    const name = sanitizeConfigText(req.body?.name || '', 60);
+    const contact = sanitizeConfigText(req.body?.contact || '', 80);
+    const orderId = sanitizeConfigText(req.body?.orderId || '', 60);
+    const content = sanitizeConfigText(req.body?.content || '', 2000);
+
+    if (!name) return res.status(400).json({ error: '请填写您的称呼' });
+    if (!contact) return res.status(400).json({ error: '请填写联系方式' });
+    if (!content) return res.status(400).json({ error: '请填写留言内容' });
+
+    try {
+        const result = await dbRun(
+            `INSERT INTO contact_messages (name, contact, orderId, content, status)
+             VALUES (?, ?, ?, ?, 0)`,
+            [name, contact, orderId || null, content]
+        );
+        res.json({ success: true, id: result.lastID });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get(apiPath('/admin/contact-messages'), requireAdminAuth, async (req, res) => {
+    const status = String(req.query.status || 'all');
+    const keyword = sanitizeConfigText(req.query.keyword || '', 80);
+    const sortBy = String(req.query.sortBy || 'created_at');
+    const sortDir = String(req.query.sortDir || 'desc').toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+    const page = Math.max(1, Number.parseInt(req.query.page, 10) || 1);
+    const pageSize = Math.min(100, Math.max(1, Number.parseInt(req.query.pageSize, 10) || 20));
+    const conditions = [];
+    const params = [];
+
+    if (status !== 'all') {
+        const numericStatus = Number(status);
+        if (![0, 1].includes(numericStatus)) {
+            return res.status(400).json({ error: 'status 参数无效' });
+        }
+        conditions.push('status = ?');
+        params.push(numericStatus);
+    }
+
+    if (keyword) {
+        conditions.push('(name LIKE ? OR contact LIKE ? OR orderId LIKE ? OR content LIKE ?)');
+        params.push(`%${keyword}%`, `%${keyword}%`, `%${keyword}%`, `%${keyword}%`);
+    }
+
+    const whereSql = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+    const sortByMap = {
+        created_at: 'created_at',
+        status: 'status',
+        id: 'id',
+        handled_at: 'handled_at'
+    };
+    const orderByField = sortByMap[sortBy] || 'created_at';
+    const offset = (page - 1) * pageSize;
+
+    try {
+        const countRow = await dbGet(`SELECT COUNT(*) AS total FROM contact_messages ${whereSql}`, params);
+        const total = Number(countRow?.total) || 0;
+        const totalPages = total > 0 ? Math.ceil(total / pageSize) : 1;
+        const rows = await dbAll(
+            `SELECT * FROM contact_messages
+             ${whereSql}
+             ORDER BY ${orderByField} ${sortDir}, id DESC
+             LIMIT ? OFFSET ?`,
+            [...params, pageSize, offset]
+        );
+
+        res.json({
+            items: rows.map((row) => ({ ...row, status: Number(row.status) })),
+            pagination: { page, pageSize, total, totalPages },
+            sort: { by: orderByField, dir: sortDir.toLowerCase() },
+            filters: { status, keyword }
+        });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.put(apiPath('/admin/contact-messages/:id/status'), requireAdminAuth, async (req, res) => {
+    const messageId = Number(req.params.id);
+    const status = Number(req.body?.status);
+
+    if (!Number.isInteger(messageId) || messageId <= 0) {
+        return res.status(400).json({ error: '留言ID无效' });
+    }
+    if (![0, 1].includes(status)) {
+        return res.status(400).json({ error: '状态仅支持 0 或 1' });
+    }
+
+    try {
+        const existing = await dbGet('SELECT id FROM contact_messages WHERE id = ?', [messageId]);
+        if (!existing) return res.status(404).json({ error: '留言不存在' });
+
+        await dbRun(
+            `UPDATE contact_messages
+             SET status = ?,
+                 handled_at = CASE WHEN ? = 1 THEN CURRENT_TIMESTAMP ELSE NULL END
+             WHERE id = ?`,
+            [status, status, messageId]
+        );
+        res.json({ success: true, status });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // --- 商品相关接口 (保持不变) ---
-app.get('/api/products', (req, res) => {
+app.get(apiPath('/products'), (req, res) => {
     db.all("SELECT * FROM products", [], (err, rows) => {
         if (err) return res.status(500).json({ error: err.message });
         const products = rows.map(p => ({
@@ -879,12 +1009,12 @@ app.get('/api/products', (req, res) => {
     });
 });
 
-app.post('/api/upload', requireAdminAuth, upload.single('file'), (req, res) => {
+app.post(apiPath('/upload'), requireAdminAuth, upload.single('file'), (req, res) => {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
-    res.json({ url: `/api/uploads/${req.file.filename}` });
+    res.json({ url: `${apiPath('/uploads')}/${req.file.filename}` });
 });
 
-app.post('/api/products', requireAdminAuth, (req, res) => {
+app.post(apiPath('/products'), requireAdminAuth, (req, res) => {
     const { name, price, discountPrice, category, typeId, stock, image, desc, specs, detailText, detailImages, shippingTag, shippingCost } = req.body;
     const cleanPrice = Number(price);
     const cleanStock = Number(stock);
@@ -926,7 +1056,7 @@ app.post('/api/products', requireAdminAuth, (req, res) => {
     });
 });
 
-app.put('/api/products/:id', requireAdminAuth, (req, res) => {
+app.put(apiPath('/products/:id'), requireAdminAuth, (req, res) => {
     const { name, price, discountPrice, category, typeId, stock, image, desc, specs, detailText, detailImages, shippingTag, shippingCost } = req.body;
     const cleanPrice = Number(price);
     const cleanStock = Number(stock);
@@ -969,7 +1099,7 @@ app.put('/api/products/:id', requireAdminAuth, (req, res) => {
     });
 });
 
-app.delete('/api/products/:id', requireAdminAuth, (req, res) => {
+app.delete(apiPath('/products/:id'), requireAdminAuth, (req, res) => {
     db.run("DELETE FROM products WHERE id = ?", req.params.id, function (err) {
         if (err) return res.status(500).json({ error: err.message });
         res.json({ message: 'Deleted', changes: this.changes });
@@ -979,7 +1109,7 @@ app.delete('/api/products/:id', requireAdminAuth, (req, res) => {
 // --- 订单管理核心接口 ---
 
 // 1. 获取订单列表 (支持状态过滤)
-app.get('/api/orders', requireAdminAuth, (req, res) => {
+app.get(apiPath('/orders'), requireAdminAuth, (req, res) => {
     const status = String(req.query.status || 'all');
     const keyword = sanitizeConfigText(req.query.keyword || '', 80);
     const sortBy = String(req.query.sortBy || 'created_at');
@@ -1046,7 +1176,7 @@ app.get('/api/orders', requireAdminAuth, (req, res) => {
 });
 
 // 2. 创建订单 (事务 + 锁库存)
-app.post('/api/orders', async (req, res) => {
+app.post(apiPath('/orders'), async (req, res) => {
     const { id, items, contact, total, couponCode: rawCouponCode } = req.body || {};
     let transactionStarted = false;
 
@@ -1213,7 +1343,7 @@ app.post('/api/orders', async (req, res) => {
 });
 
 // 3. 按订单号查询单个订单 (前台用)
-app.get('/api/orders/:id', (req, res) => {
+app.get(apiPath('/orders/:id'), (req, res) => {
     db.get("SELECT * FROM orders WHERE id = ?", [req.params.id], (err, order) => {
         if (err) return res.status(500).json({ error: err.message });
         if (!order) return res.status(404).json({ error: '订单不存在' });
@@ -1248,7 +1378,7 @@ app.get('/api/orders/:id', (req, res) => {
 });
 
 // 用户提交支付凭证：待付款(1) -> 待确认(5)
-app.post('/api/orders/:id/payment', async (req, res) => {
+app.post(apiPath('/orders/:id/payment'), async (req, res) => {
     const orderId = req.params.id;
     let transactionStarted = false;
 
@@ -1289,7 +1419,7 @@ app.post('/api/orders/:id/payment', async (req, res) => {
 });
 
 // 4. 更新订单状态 (状态机校验 + 事务库存回滚)
-app.put('/api/orders/:id/status', requireAdminAuth, async (req, res) => {
+app.put(apiPath('/orders/:id/status'), requireAdminAuth, async (req, res) => {
     const orderId = req.params.id;
     const { trackingCompany, trackingNo } = req.body || {};
     const newStatus = Number(req.body?.status);
@@ -1356,7 +1486,7 @@ app.put('/api/orders/:id/status', requireAdminAuth, async (req, res) => {
 });
 
 // 5. 删除待确认订单（仅后台：用于清理异常/测试单）
-app.delete('/api/orders/:id', requireAdminAuth, async (req, res) => {
+app.delete(apiPath('/orders/:id'), requireAdminAuth, async (req, res) => {
     const orderId = String(req.params.id || '').trim();
     let transactionStarted = false;
 
@@ -1413,7 +1543,7 @@ app.delete('/api/orders/:id', requireAdminAuth, async (req, res) => {
 
 // --- 数据统计与转化埋点接口 ---
 
-app.post('/api/analytics/event', async (req, res) => {
+app.post(apiPath('/analytics/event'), async (req, res) => {
     const { sessionId, eventKey, page, meta } = req.body || {};
     const cleanEventKey = typeof eventKey === 'string' ? eventKey.trim().slice(0, 80) : '';
 
@@ -1441,7 +1571,7 @@ app.post('/api/analytics/event', async (req, res) => {
     }
 });
 
-app.get('/api/admin/stats/sales-trend', requireAdminAuth, async (req, res) => {
+app.get(apiPath('/admin/stats/sales-trend'), requireAdminAuth, async (req, res) => {
     const parsedRange = resolveStatsRange({
         period: req.query.period,
         startDate: req.query.startDate,
@@ -1525,7 +1655,7 @@ app.get('/api/admin/stats/sales-trend', requireAdminAuth, async (req, res) => {
     }
 });
 
-app.get('/api/admin/stats/product-sales', requireAdminAuth, async (req, res) => {
+app.get(apiPath('/admin/stats/product-sales'), requireAdminAuth, async (req, res) => {
     const range = getPeriodRangeForProductReport(req.query.period);
     if (range.error) return res.status(400).json({ error: range.error });
 
@@ -1581,7 +1711,7 @@ app.get('/api/admin/stats/product-sales', requireAdminAuth, async (req, res) => 
     }
 });
 
-app.get('/api/admin/stats/conversion', requireAdminAuth, async (req, res) => {
+app.get(apiPath('/admin/stats/conversion'), requireAdminAuth, async (req, res) => {
     const parsedRange = resolveStatsRange({
         period: req.query.period,
         startDate: req.query.startDate,
@@ -1661,5 +1791,5 @@ app.get('/api/admin/stats/conversion', requireAdminAuth, async (req, res) => {
 });
 
 app.listen(PORT, () => {
-    console.log(`Server running on http://localhost:${PORT}`);
+    console.log(`Server running on http://localhost:${PORT} (API prefix: ${API_PREFIX})`);
 });

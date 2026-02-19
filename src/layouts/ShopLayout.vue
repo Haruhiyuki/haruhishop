@@ -22,7 +22,9 @@
         <!-- Title Section -->
         <div>
             <div class="brand-area" @click="$router.push('/')">
-                <div class="brand-logo">SOS</div>
+                <div class="brand-logo">
+                    <img :src="mainLogoUrl" alt="春日商城 Logo" class="brand-logo-img">
+                </div>
                 <div class="brand-text">
                     <h1>春 日 商 城</h1>
                     <div v-if="!isHomePage" class="brand-subtitle">{{ pageTitle }}</div>
@@ -30,7 +32,16 @@
             </div>
             <div v-if="isHomePage" style="width: fit-content;">
                 <hr class="custom-hr">
-                <span class="slogan">用爱发电的非营利周边商城平台</span>
+                <span class="slogan">
+                    用爱发电的
+                    <span class="nonprofit-term" tabindex="0" aria-label="非营利说明">
+                        非营利
+                        <span class="nonprofit-tooltip" role="tooltip">
+                            “非营利”不等于“非盈利”，是不以利润分配为目的，所获利润用于团内。
+                        </span>
+                    </span>
+                    周边商城平台
+                </span>
             </div>
         </div>
 
@@ -54,7 +65,7 @@
                 </div>
             </div>
             <div class="fund-notice">
-                本商城全部收入将投入应援团经费<br>用于维持日常开销与活动支出
+                本商城全部利润将投入应援团经费<br>用于维持日常开销与活动支出
             </div>
         </div>
     </header>
@@ -62,7 +73,9 @@
     <!-- Header: 迷你版 (详情页) -->
     <header v-else class="mini-header-detail">
         <div class="items-center flex-row" style="display:flex; gap: 0.75rem; cursor: pointer;" @click="$router.push('/')">
-            <div class="brand-logo" style="width: 2rem; height: 2rem; font-size: 0.75rem;">SOS</div>
+            <div class="brand-logo mini-brand-logo">
+                <img :src="miniLogoUrl" alt="春日商城 Mini Logo" class="brand-logo-img">
+            </div>
             <span style="font-weight: bold; font-size: 1.125rem; color: white; letter-spacing: 0.1em;">春日商城</span>
         </div>
         <div style="display: flex; gap: 1rem; color: white; font-size: 0.875rem;">
@@ -83,11 +96,7 @@
         </router-view>
     </main>
 
-    <!-- Footer -->
-    <footer class="footer">
-        <p style="margin: 0;">&copy; 2024 北高文艺部 / SOS团支部. All rights reserved.</p>
-        <p style="margin: 0.5rem 0 0 0; font-size: 0.75rem; opacity: 0.6;">此页面为 Vue3 重构版预览</p>
-    </footer>
+    <TheFooter />
 
     <!-- Toast -->
     <transition name="fade">
@@ -103,11 +112,15 @@
 import { computed } from 'vue'
 import { useRoute } from 'vue-router'
 import { useShopStore } from '@/stores/shopStore'
+import TheFooter from '@/components/TheFooter.vue'
+import { appBaseUrl } from '@/utils/runtimePaths'
 import '@/assets/shop.css'
 
 const route = useRoute()
 const store = useShopStore()
 const { cartCount, state, setProductType } = store
+const mainLogoUrl = `${appBaseUrl}haruhi-logo-192.png`
+const miniLogoUrl = `${appBaseUrl}favicon.ico`
 
 const isHomePage = computed(() => route.name === 'home')
 const isDetailPage = computed(() => route.name === 'product')

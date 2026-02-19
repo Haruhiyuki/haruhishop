@@ -5,7 +5,7 @@ import { trackEvent } from '@/utils/analytics'
 import { hasValidAdminToken } from '@/utils/adminAuth'
 
 const router = createRouter({
-  history: createWebHistory(),
+  history: createWebHistory(import.meta.env.BASE_URL),
   routes: [
     { path: '/admin/login', name: 'admin-login', component: () => import('../views/admin/AdminLoginView.vue') },
     // 前台商城路由
@@ -31,6 +31,7 @@ const router = createRouter({
         { path: '', redirect: '/admin/dashboard' },
         { path: 'dashboard', name: 'admin-dashboard', component: () => import('../views/admin/DashboardView.vue') },
         { path: 'orders', name: 'admin-orders', component: () => import('../views/admin/OrdersView.vue') },
+        { path: 'messages', name: 'admin-messages', component: () => import('../views/admin/MessagesView.vue') },
         { path: 'products', name: 'admin-products', component: () => import('../views/admin/ProductsView.vue') }, // 新增路由
         { path: 'coupons', name: 'admin-coupons', component: () => import('../views/admin/CouponsView.vue') },
         { path: 'stats', name: 'admin-stats', component: () => import('../views/admin/StatsView.vue') },

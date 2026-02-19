@@ -1,26 +1,49 @@
 import { fileURLToPath, URL } from 'node:url'
-import { defineConfig } from 'vite'
+import { defineConfig, loadEnv } from 'vite'
 import vue from '@vitejs/plugin-vue'
 
-export default defineConfig({
-  plugins: [vue()],
-  resolve: {
-    alias: {
-      '@': fileURLToPath(new URL('./src', import.meta.url))
-    }
-  },
-  server: {
-    port: 15532,      // [建议] 前端运行在 5173，避开后端的 3000
-    strictPort: false,
-    open: true,
-    host: true,
-    // [新增] 代理配置
-    proxy: {
-      '/api': {
-        target: 'http://localhost:13221', // 后端服务地址
-        changeOrigin: true,              // 允许跨域（修改 Host 头）
-        secure: false                    // 如果是 https 且有自签名证书，设为 false
-        // rewrite: (path) => path.replace(/^\/api/, '') // 如果后端路由没有 /api 前缀，可以开启这行重写
+const normalizeBasePath = (value) => {
+  const raw = String(value || '/').trim()
+  if (!raw || raw === '/') return '/'
+
+  let normalized = raw.startsWith('/') ? raw : `/${raw}`
+  normalized = normalized.replace(/\/{2,}/g, '/')
+  if (!normalized.endsWith('/')) normalized += '/'
+  return normalized
+}
+
+const normalizeApiPrefix = (value) => {
+  const raw = String(value || '/shop-api').trim()
+  if (!raw) return '/shop-api'
+  const normalized = raw.startsWith('/') ? raw : `/${raw}`
+  return normalized.replace(/\/+$/, '') || '/shop-api'
+}
+
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, process.cwd(), '')
+  const base = normalizeBasePath(env.VITE_BASE_PATH || '/shop/')
+  const apiPrefix = normalizeApiPrefix(env.VITE_API_BASE || '/shop-api')
+  const apiTarget = env.VITE_DEV_API_TARGET || 'http://localhost:13221'
+
+  return {
+    base,
+    plugins: [vue()],
+    resolve: {
+      alias: {
+        '@': fileURLToPath(new URL('./src', import.meta.url))
+      }
+    },
+    server: {
+      port: 15532,
+      strictPort: false,
+      open: base,
+      host: true,
+      proxy: {
+        [apiPrefix]: {
+          target: apiTarget,
+          changeOrigin: true,
+          secure: false
+        }
       }
     }
   }

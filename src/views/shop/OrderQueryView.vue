@@ -87,6 +87,7 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
+import { resolveApiPath } from '@/utils/runtimePaths'
 
 const route = useRoute()
 const queryId = ref('')
@@ -132,7 +133,7 @@ const query = async () => {
     order.value = null
     try {
         const params = new URLSearchParams({ phoneLast4: phoneLast4.value.trim() })
-        const res = await fetch(`/api/orders/${queryId.value.trim()}?${params.toString()}`)
+        const res = await fetch(`${resolveApiPath(`/orders/${queryId.value.trim()}`)}?${params.toString()}`)
         if (!res.ok) {
             const data = await res.json()
             error.value = data.error || '查询失败'

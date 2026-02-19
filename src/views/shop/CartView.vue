@@ -46,7 +46,7 @@
             </table>
         </div>
         <div class="cart-footer">
-            <div style="font-size: 0.875rem; color: #666;"><i class="fa fa-info-circle mr-1"></i> 满200元包邮，当前运费: ¥{{ store.shippingFee }}</div>
+            <div style="font-size: 0.875rem; color: #666;"><i class="fa fa-info-circle mr-1"></i> 满{{ store.freeShippingThreshold }}元包邮，当前运费: ¥{{ store.shippingFee }}</div>
             <div class="items-center flex-row gap-4">
                 <div style="text-align: right;">
                     <span style="color: #666; margin-right: 0.5rem;">合计 (不含运费):</span>

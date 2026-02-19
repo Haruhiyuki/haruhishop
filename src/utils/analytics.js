@@ -1,5 +1,7 @@
+import { resolveApiPath } from '@/utils/runtimePaths';
+
 const SESSION_KEY = 'sos_analytics_session_id';
-const EVENT_URL = '/api/analytics/event';
+const EVENT_URL = resolveApiPath('/analytics/event');
 
 function createSessionId() {
     return `s_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;

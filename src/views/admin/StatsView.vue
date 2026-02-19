@@ -152,6 +152,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import Chart from 'chart.js/auto'
 import { buildAdminAuthHeaders, clearAdminToken } from '@/utils/adminAuth'
+import { apiBasePath, resolveApiPath, resolveAppPath } from '@/utils/runtimePaths'
 
 const trendPeriodOptions = [
     { value: '7', label: '近7天' },
@@ -277,12 +278,12 @@ const readJsonResponse = async (res, fallbackMessage) => {
 
     if (res.status === 401) {
         clearAdminToken()
-        if (typeof window !== 'undefined') window.location.href = '/admin/login'
+        if (typeof window !== 'undefined') window.location.href = resolveAppPath('admin/login')
         throw new Error('登录已失效，请重新登录')
     }
 
     if (contentType.includes('text/html') || text.trim().startsWith('<!DOCTYPE') || text.trim().startsWith('<html')) {
-        throw new Error('统计接口返回了 HTML 页面，请确认后端已启动并已重启到最新代码（包含 /api/admin/stats/* 接口）')
+        throw new Error(`统计接口返回了 HTML 页面，请确认后端已启动并已重启到最新代码（包含 ${apiBasePath}/admin/stats/* 接口）`)
     }
 
     let data
@@ -375,8 +376,8 @@ const loadTrendAndConversion = async () => {
     try {
         const query = buildTrendQuery()
         const [trendRes, conversionRes] = await Promise.all([
-            fetch(`/api/admin/stats/sales-trend?${query}`, { headers: buildAdminAuthHeaders() }),
-            fetch(`/api/admin/stats/conversion?${query}`, { headers: buildAdminAuthHeaders() })
+            fetch(`${resolveApiPath('/admin/stats/sales-trend')}?${query}`, { headers: buildAdminAuthHeaders() }),
+            fetch(`${resolveApiPath('/admin/stats/conversion')}?${query}`, { headers: buildAdminAuthHeaders() })
         ])
         const trendJson = await readJsonResponse(trendRes, '销售趋势加载失败')
         const conversionJson = await readJsonResponse(conversionRes, '转化率加载失败')
@@ -404,7 +405,7 @@ const loadTrendAndConversion = async () => {
 const loadProductReport = async () => {
     productLoading.value = true
     try {
-        const res = await fetch(`/api/admin/stats/product-sales?period=${productPeriod.value}`, {
+        const res = await fetch(`${resolveApiPath('/admin/stats/product-sales')}?period=${productPeriod.value}`, {
             headers: buildAdminAuthHeaders()
         })
         const json = await readJsonResponse(res, '商品报表加载失败')

@@ -1,16 +1,21 @@
 import { reactive, computed } from 'vue'
 import { trackEvent } from '@/utils/analytics'
 import { buildAdminAuthHeaders, clearAdminToken, hasValidAdminToken, setAdminToken } from '@/utils/adminAuth'
+import { isAdminPagePath, resolveApiPath, resolveAppPath } from '@/utils/runtimePaths'
 
 // 使用 Vite 代理路径
-const API_URL = '/api/products'
-const ORDER_URL = '/api/orders'
-const UPLOAD_URL = '/api/upload'
-const ADMIN_LOGIN_URL = '/api/admin/login'
-const SITE_CONFIG_URL = '/api/site-config'
-const ADMIN_SITE_CONFIG_URL = '/api/admin/site-config'
-const COUPON_PREVIEW_URL = '/api/coupons/preview'
-const ADMIN_COUPONS_URL = '/api/admin/coupons'
+const API_URL = resolveApiPath('/products')
+const ORDER_URL = resolveApiPath('/orders')
+const UPLOAD_URL = resolveApiPath('/upload')
+const ADMIN_LOGIN_URL = resolveApiPath('/admin/login')
+const SITE_CONFIG_URL = resolveApiPath('/site-config')
+const ADMIN_SITE_CONFIG_URL = resolveApiPath('/admin/site-config')
+const COUPON_PREVIEW_URL = resolveApiPath('/coupons/preview')
+const ADMIN_COUPONS_URL = resolveApiPath('/admin/coupons')
+const CONTACT_MESSAGES_URL = resolveApiPath('/contact/messages')
+const ADMIN_CONTACT_MESSAGES_URL = resolveApiPath('/admin/contact-messages')
+const FREE_SHIPPING_THRESHOLD = 150
+const FREE_SHIPPING_THRESHOLD_CENTS = Math.round(FREE_SHIPPING_THRESHOLD * 100)
 const DEFAULT_SITE_CONFIG = Object.freeze({
     payment: {
         wechatQr: '',
@@ -76,6 +81,8 @@ const state = reactive({
     adminOrdersMeta: { page: 1, pageSize: 20, total: 0, totalPages: 1 },
     adminCoupons: [],
     adminCouponsMeta: { page: 1, pageSize: 20, total: 0, totalPages: 1 },
+    adminContactMessages: [],
+    adminContactMessagesMeta: { page: 1, pageSize: 20, total: 0, totalPages: 1 },
     siteConfig: normalizeSiteConfig()
 })
 
@@ -87,9 +94,13 @@ export const useShopStore = () => {
         return fromCents(totalCents)
     })
     
-    // 运费计算：按标签分组取最大值后累加
+    // 运费计算：按标签分组取最大值后累加，满额包邮
     const shippingFee = computed(() => {
         if (state.cart.length === 0) return 0
+
+        const productsTotalCents = toCents(cartTotal.value)
+        if (productsTotalCents >= FREE_SHIPPING_THRESHOLD_CENTS) return 0
+
         const groups = {}
         state.cart.forEach(item => {
             const tag = item.shippingTag || 'default'
@@ -119,9 +130,11 @@ export const useShopStore = () => {
         state.adminOrdersMeta = { page: 1, pageSize: 20, total: 0, totalPages: 1 }
         state.adminCoupons = []
         state.adminCouponsMeta = { page: 1, pageSize: 20, total: 0, totalPages: 1 }
+        state.adminContactMessages = []
+        state.adminContactMessagesMeta = { page: 1, pageSize: 20, total: 0, totalPages: 1 }
         showNotification('登录已失效，请重新登录')
-        if (typeof window !== 'undefined' && window.location.pathname.startsWith('/admin')) {
-            window.location.href = '/admin/login'
+        if (typeof window !== 'undefined' && isAdminPagePath(window.location.pathname)) {
+            window.location.href = resolveAppPath('admin/login')
         }
     }
 
@@ -162,6 +175,28 @@ export const useShopStore = () => {
         state.adminOrdersMeta = { page: 1, pageSize: 20, total: 0, totalPages: 1 }
         state.adminCoupons = []
         state.adminCouponsMeta = { page: 1, pageSize: 20, total: 0, totalPages: 1 }
+        state.adminContactMessages = []
+        state.adminContactMessagesMeta = { page: 1, pageSize: 20, total: 0, totalPages: 1 }
+    }
+
+    const submitContactMessage = async (payload) => {
+        try {
+            const res = await fetch(CONTACT_MESSAGES_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload || {})
+            })
+            const data = await res.json().catch(() => ({}))
+            if (!res.ok) {
+                showNotification(data.error || '留言提交失败')
+                return false
+            }
+            showNotification('留言提交成功，我们会尽快处理')
+            return true
+        } catch (err) {
+            showNotification('留言提交失败，请稍后重试')
+            return false
+        }
     }
 
     // --- 商品 API ---
@@ -366,6 +401,84 @@ export const useShopStore = () => {
             return true
         } catch (err) {
             showNotification('删除优惠券失败')
+            return false
+        }
+    }
+
+    const fetchAdminContactMessages = async (filters = {}) => {
+        if (!ensureAdminAuth()) {
+            state.adminContactMessages = []
+            state.adminContactMessagesMeta = { page: 1, pageSize: 20, total: 0, totalPages: 1 }
+            return []
+        }
+
+        const search = new URLSearchParams()
+        if (filters.status !== undefined && filters.status !== null && String(filters.status) !== '') {
+            search.set('status', String(filters.status))
+        }
+        if (filters.keyword) search.set('keyword', String(filters.keyword).trim())
+        if (filters.sortBy) search.set('sortBy', String(filters.sortBy))
+        if (filters.sortDir) search.set('sortDir', String(filters.sortDir))
+        if (filters.page) search.set('page', String(filters.page))
+        if (filters.pageSize) search.set('pageSize', String(filters.pageSize))
+
+        const url = `${ADMIN_CONTACT_MESSAGES_URL}${search.toString() ? `?${search.toString()}` : ''}`
+
+        try {
+            const res = await fetch(url, { headers: buildAdminAuthHeaders() })
+            const data = await res.json().catch(() => ({}))
+            if (res.status === 401) {
+                handleAdminUnauthorized()
+                return []
+            }
+            if (!res.ok) {
+                showNotification(data.error || '留言列表加载失败')
+                return []
+            }
+            if (Array.isArray(data)) {
+                state.adminContactMessages = data
+                state.adminContactMessagesMeta = {
+                    page: filters.page ? Number(filters.page) : 1,
+                    pageSize: filters.pageSize ? Number(filters.pageSize) : data.length || 20,
+                    total: data.length,
+                    totalPages: 1
+                }
+            } else {
+                state.adminContactMessages = Array.isArray(data.items) ? data.items : []
+                state.adminContactMessagesMeta = data.pagination || {
+                    page: 1,
+                    pageSize: state.adminContactMessages.length || 20,
+                    total: state.adminContactMessages.length,
+                    totalPages: 1
+                }
+            }
+            return state.adminContactMessages
+        } catch (err) {
+            showNotification('留言列表加载失败')
+            return []
+        }
+    }
+
+    const updateAdminContactMessageStatus = async (id, status) => {
+        if (!ensureAdminAuth()) return false
+        try {
+            const res = await fetch(`${ADMIN_CONTACT_MESSAGES_URL}/${id}/status`, {
+                method: 'PUT',
+                headers: buildAdminAuthHeaders({ 'Content-Type': 'application/json' }),
+                body: JSON.stringify({ status })
+            })
+            const data = await res.json().catch(() => ({}))
+            if (res.status === 401) {
+                handleAdminUnauthorized()
+                return false
+            }
+            if (!res.ok) {
+                showNotification(data.error || '留言状态更新失败')
+                return false
+            }
+            return true
+        } catch (err) {
+            showNotification('留言状态更新失败')
             return false
         }
     }
@@ -623,11 +736,13 @@ export const useShopStore = () => {
 
     return {
         state, cartCount, cartTotal, shippingFee, finalTotal,
+        freeShippingThreshold: FREE_SHIPPING_THRESHOLD,
         setProductType, addToCart, removeFromCart, clearCart, showNotification, setOrder,
         fetchProducts, addProduct, updateProduct, deleteProduct, uploadImage, 
         createOrderBackend, submitOrderPayment,
         fetchAdminOrders, updateOrderStatus, deleteAdminOrder,
         previewCoupon, fetchAdminCoupons, createCouponBatch, updateCouponStatus, deleteCoupon,
+        submitContactMessage, fetchAdminContactMessages, updateAdminContactMessageStatus,
         fetchSiteConfig, updateSiteConfig,
         resolveProductPrice, hasProductDiscount,
         adminLogin, adminLogout

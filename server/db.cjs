@@ -106,10 +106,25 @@ db.serialize(() => {
     db.run(`CREATE INDEX IF NOT EXISTS idx_coupons_code
             ON coupons(code)`);
 
+    db.run(`CREATE TABLE IF NOT EXISTS contact_messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT,
+        contact TEXT,
+        orderId TEXT,
+        content TEXT,
+        status INTEGER DEFAULT 0,
+        handled_at DATETIME,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`);
+
+    db.run(`CREATE INDEX IF NOT EXISTS idx_contact_messages_status_time
+            ON contact_messages(status, created_at)`);
+
     ensureColumn('products', 'discountPrice', 'INTEGER');
     ensureColumn('orders', 'originalTotal', 'REAL DEFAULT 0');
     ensureColumn('orders', 'discountAmount', 'REAL DEFAULT 0');
     ensureColumn('orders', 'couponCode', 'TEXT');
+    ensureColumn('contact_messages', 'handled_at', 'DATETIME');
 });
 
 module.exports = db;

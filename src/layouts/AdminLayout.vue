@@ -12,6 +12,9 @@
             <router-link to="/admin/orders" class="nav-item" active-class="active">
                 <i class="fa fa-list-alt" style="width: 1.5rem;"></i> 订单管理
             </router-link>
+            <router-link to="/admin/messages" class="nav-item" active-class="active">
+                <i class="fa fa-comments" style="width: 1.5rem;"></i> 留言管理
+            </router-link>
             <!-- [新增] 商品库入口 -->
             <router-link to="/admin/products" class="nav-item" active-class="active">
                 <i class="fa fa-box" style="width: 1.5rem;"></i> 商品库
@@ -50,12 +53,14 @@
 import { computed } from 'vue'
 import { useRoute } from 'vue-router'
 import { clearAdminToken } from '@/utils/adminAuth'
+import { resolveAppPath } from '@/utils/runtimePaths'
 import '@/assets/admin.css'
 
 const route = useRoute()
 const pageTitleMap = {
     'admin-dashboard': '总览看板',
     'admin-orders': '订单管理',
+    'admin-messages': '留言管理',
     'admin-products': '商品库',
     'admin-coupons': '优惠券管理',
     'admin-stats': '数据统计',
@@ -66,6 +71,6 @@ const pageTitle = computed(() => pageTitleMap[route.name] || '管理后台')
 
 const logout = () => {
     clearAdminToken()
-    window.location.href = '/admin/login'
+    window.location.href = resolveAppPath('admin/login')
 }
 </script>

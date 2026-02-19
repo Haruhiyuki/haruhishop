@@ -1,28 +1,63 @@
 # Spring Day Shop
 
-## 运行
+## 本地运行
 
 ```bash
 npm install
 cp .env.example .env
-# 编辑 .env，替换管理员账号、密码和签名密钥
+# 编辑 .env
 npm run start
 ```
 
-前端默认走 Vite 代理，请确保后端服务可用。
+默认配置：
+- 前端挂载路径：`/shop/`
+- 后端 API 前缀：`/shop-api`
 
-## 后台鉴权配置
-
-后台管理接口使用 Bearer Token 鉴权。后端启动时会自动读取项目根目录 `.env`：
+## 环境变量
 
 ```bash
 ADMIN_USERNAME=your-admin-user
 ADMIN_PASSWORD=your-strong-password
-ADMIN_AUTH_SECRET=your-long-random-secret
+ADMIN_AUTH_SECRET=replace-with-a-long-random-secret
 ADMIN_TOKEN_TTL_SECONDS=86400
+FREE_SHIPPING_THRESHOLD=150
+
+API_PREFIX=/shop-api
+VITE_BASE_PATH=/shop/
+VITE_API_BASE=/shop-api
+VITE_DEV_API_TARGET=http://localhost:13221
 ```
 
 说明：
-- 可复制模板：`cp .env.example .env`
 - 生产环境(`NODE_ENV=production`)下，未配置 `ADMIN_USERNAME` / `ADMIN_PASSWORD` / `ADMIN_AUTH_SECRET` 会拒绝启动。
-- 开发环境未配置时会使用默认凭据，仅用于本地调试，不可用于生产。
+- `API_PREFIX` 与 `VITE_API_BASE` 必须保持一致。
+- `VITE_BASE_PATH` 末尾必须带 `/`，例如 `/shop/`。
+- `FREE_SHIPPING_THRESHOLD` 为包邮门槛（元），默认 `150`。
+
+## 生产构建
+
+```bash
+npm run build
+```
+
+构建产物在 `dist/`，应通过反向代理挂到 `/shop/`。
+
+## Nginx 示例（/shop + /shop-api）
+
+```nginx
+# 前端静态资源
+location ^~ /shop/ {
+    alias /var/www/haruhishop/dist/;
+    try_files $uri $uri/ /shop/index.html;
+}
+
+# 后端 API（Node 13221）
+location ^~ /shop-api/ {
+    proxy_pass http://127.0.0.1:13221/shop-api/;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+```
