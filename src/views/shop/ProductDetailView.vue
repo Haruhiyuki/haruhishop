@@ -91,10 +91,9 @@
 
     <div v-if="mainImagePreview.show" class="detail-image-preview-overlay" @click.self="closeMainImagePreview">
         <div class="detail-image-preview-card">
-            <button class="detail-image-preview-close" @click="closeMainImagePreview">关闭</button>
+            <button class="detail-image-preview-close" @click="closeMainImagePreview" aria-label="关闭预览">×</button>
             <div class="detail-image-preview-title">{{ product.name }}</div>
             <img :src="mainImagePreview.url" :alt="`${product.name} 主图`" class="detail-image-preview-image">
-            <div class="detail-image-preview-tip">点击遮罩可关闭</div>
         </div>
     </div>
   </div>
@@ -192,12 +191,22 @@ const buyNow = () => {
     right: 0.75rem;
     top: 0.75rem;
     border: none;
-    border-radius: 6px;
-    background: #f3f4f6;
-    color: #374151;
-    padding: 0.25rem 0.6rem;
+    width: 2rem;
+    height: 2rem;
+    border-radius: 9999px;
+    background: #111827;
+    color: #fff;
     cursor: pointer;
-    font-size: 0.75rem;
+    font-size: 1.1rem;
+    line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: opacity 0.2s ease;
+}
+
+.detail-image-preview-close:hover {
+    opacity: 0.85;
 }
 
 .detail-image-preview-title {
