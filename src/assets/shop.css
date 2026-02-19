@@ -235,7 +235,7 @@ hr.custom-hr { margin: 0.5rem 0; border: none; border-top: 2px solid white; opac
     align-items: center;
     margin: 0 0.1rem;
     border-bottom: 1px dashed rgba(255, 255, 255, 0.7);
-    cursor: help;
+    cursor: pointer;
 }
 .nonprofit-tooltip {
     position: absolute;
@@ -273,6 +273,14 @@ hr.custom-hr { margin: 0.5rem 0; border: none; border-top: 2px solid white; opac
     opacity: 1;
     visibility: visible;
     transform: translateX(-50%) translateY(0);
+}
+.nonprofit-term.is-open .nonprofit-tooltip {
+    opacity: 1;
+    visibility: visible;
+    transform: translateX(-50%) translateY(0);
+}
+.nonprofit-tooltip-mobile {
+    display: none;
 }
 
 .filter-section { display: flex; flex-direction: column; gap: 1rem; margin-top: auto; }
@@ -560,24 +568,27 @@ textarea.input-field { resize: none; height: 6rem; }
         z-index: 80;
     }
 
-    .nonprofit-tooltip {
+    .nonprofit-term .nonprofit-tooltip {
+        display: none !important;
+    }
+    .nonprofit-tooltip-mobile {
+        display: block;
         position: fixed;
         left: 12px;
         right: 12px;
-        top: auto;
         bottom: 12px;
-        width: auto;
+        padding: 0.6rem 0.75rem;
+        border-radius: 10px;
+        border: 1px solid rgba(148, 163, 184, 0.45);
+        background: #0f172a;
+        box-shadow: 0 14px 24px rgba(2, 6, 23, 0.45);
+        color: #f8fafc;
+        font-size: 0.75rem;
+        letter-spacing: 0;
+        line-height: 1.45;
         max-height: 45vh;
         overflow-y: auto;
-        transform: translateY(8px);
         z-index: 120;
-    }
-    .nonprofit-tooltip::before {
-        display: none;
-    }
-    .nonprofit-term:hover .nonprofit-tooltip,
-    .nonprofit-term:focus-within .nonprofit-tooltip {
-        transform: translateY(0);
     }
 
     /* Cart footer: stack vertically */

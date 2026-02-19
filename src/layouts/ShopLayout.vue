@@ -63,10 +63,21 @@
                 <hr class="custom-hr">
                 <span class="slogan">
                     用爱发电的
-                    <span class="nonprofit-term" tabindex="0" aria-label="非营利说明">
+                    <span
+                        ref="nonprofitTermRef"
+                        class="nonprofit-term"
+                        :class="{ 'is-open': nonprofitTooltipOpen }"
+                        role="button"
+                        :aria-expanded="nonprofitTooltipOpen ? 'true' : 'false'"
+                        tabindex="0"
+                        aria-label="非营利说明"
+                        @click.stop="toggleNonprofitTooltip"
+                        @keydown.enter.prevent="toggleNonprofitTooltip"
+                        @keydown.space.prevent="toggleNonprofitTooltip"
+                    >
                         非营利
                         <span class="nonprofit-tooltip" role="tooltip">
-                            “非营利”不等于“非盈利”，是不以利润分配为目的，所获利润用于团内。
+                            “非营利”不等于“非盈利”，是不以利润分配为目的，所获利润全部用于团内活动、企划和日常开销。
                         </span>
                     </span>
                     周边商城平台
@@ -109,7 +120,7 @@
                 </transition>
             </div>
             <div class="fund-notice">
-                本商城全部利润将投入应援团经费<br>用于维持日常开销与活动支出
+                本商城全部利润将投入应援团经费<br>用于活动、企划和日常开销
             </div>
         </div>
 
@@ -179,6 +190,19 @@
             {{ state.notification }}
         </div>
     </transition>
+
+    <teleport to="body">
+        <transition name="fade">
+            <div
+                v-if="nonprofitTooltipOpen && isHomePage && isMobileViewport"
+                ref="nonprofitTooltipPanelRef"
+                class="nonprofit-tooltip-mobile"
+                role="tooltip"
+            >
+                “非营利”不等于“非盈利”，是不以利润分配为目的，所获利润用于团内。
+            </div>
+        </transition>
+    </teleport>
   </div>
 </template>
 
@@ -199,6 +223,10 @@ const miniLogoUrl = `${appBaseUrl}favicon.ico`
 const mobileMenuOpen = ref(false)
 const isFilterExpanded = ref(true)
 const mobileMenuWrapRef = ref(null)
+const nonprofitTermRef = ref(null)
+const nonprofitTooltipPanelRef = ref(null)
+const nonprofitTooltipOpen = ref(false)
+const isMobileViewport = ref(false)
 
 const isHomePage = computed(() => route.name === 'home')
 const isDetailPage = computed(() => route.name === 'product')
@@ -238,6 +266,10 @@ const toggleFilterExpand = () => {
     isFilterExpanded.value = !isFilterExpanded.value
 }
 
+const toggleNonprofitTooltip = () => {
+    nonprofitTooltipOpen.value = !nonprofitTooltipOpen.value
+}
+
 const toggleMobileMenu = () => {
     mobileMenuOpen.value = !mobileMenuOpen.value
 }
@@ -259,24 +291,45 @@ watch(
     () => route.fullPath,
     () => {
         mobileMenuOpen.value = false
+        nonprofitTooltipOpen.value = false
     }
 )
 
 const handleDocumentPointerDown = (event) => {
-    if (!mobileMenuOpen.value) return
     const target = event.target
     if (!(target instanceof Node)) return
-    const menuWrap = mobileMenuWrapRef.value
-    if (menuWrap && !menuWrap.contains(target)) {
-        mobileMenuOpen.value = false
+
+    if (mobileMenuOpen.value) {
+        const menuWrap = mobileMenuWrapRef.value
+        if (menuWrap && !menuWrap.contains(target)) {
+            mobileMenuOpen.value = false
+        }
+    }
+
+    if (nonprofitTooltipOpen.value) {
+        const nonprofitTerm = nonprofitTermRef.value
+        const nonprofitPanel = nonprofitTooltipPanelRef.value
+        const isInsideTerm = nonprofitTerm && nonprofitTerm.contains(target)
+        const isInsidePanel = nonprofitPanel && nonprofitPanel.contains(target)
+        if (!isInsideTerm && !isInsidePanel) {
+            nonprofitTooltipOpen.value = false
+        }
     }
 }
 
+const updateViewportState = () => {
+    if (typeof window === 'undefined') return
+    isMobileViewport.value = window.innerWidth <= 639
+}
+
 onMounted(() => {
+    updateViewportState()
+    window.addEventListener('resize', updateViewportState)
     document.addEventListener('pointerdown', handleDocumentPointerDown)
 })
 
 onBeforeUnmount(() => {
+    window.removeEventListener('resize', updateViewportState)
     document.removeEventListener('pointerdown', handleDocumentPointerDown)
 })
 </script>
