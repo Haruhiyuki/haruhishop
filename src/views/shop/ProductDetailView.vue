@@ -8,7 +8,15 @@
 
     <div class="detail-card">
         <div class="detail-layout">
-            <div class="detail-image-box">
+            <div
+                class="detail-image-box detail-main-image"
+                role="button"
+                tabindex="0"
+                aria-label="查看商品主图大图"
+                @click="openMainImagePreview"
+                @keydown.enter.prevent="openMainImagePreview"
+                @keydown.space.prevent="openMainImagePreview"
+            >
                 <img :src="product.image" alt="商品主图">
             </div>
             <div class="detail-info">
@@ -40,7 +48,7 @@
                         <span style="font-size: 0.875rem; color: #666;">数量</span>
                         <div class="quantity-control">
                             <button @click="quantity > 1 ? quantity-- : null" class="qty-btn">-</button>
-                            <input type="number" v-model="quantity" class="qty-input" readonly>
+                            <input type="text" :value="quantity" class="qty-input" readonly aria-label="购买数量">
                             <button @click="quantity++" class="qty-btn">+</button>
                         </div>
                         <span style="font-size: 0.75rem; color: #999;">库存 ({{ product.stock }}件)</span>
@@ -80,11 +88,20 @@
             </div>
         </div>
     </div>
+
+    <div v-if="mainImagePreview.show" class="detail-image-preview-overlay" @click.self="closeMainImagePreview">
+        <div class="detail-image-preview-card">
+            <button class="detail-image-preview-close" @click="closeMainImagePreview">关闭</button>
+            <div class="detail-image-preview-title">{{ product.name }}</div>
+            <img :src="mainImagePreview.url" :alt="`${product.name} 主图`" class="detail-image-preview-image">
+            <div class="detail-image-preview-tip">点击遮罩可关闭</div>
+        </div>
+    </div>
   </div>
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useShopStore } from '@/stores/shopStore'
 
@@ -92,10 +109,38 @@ const route = useRoute()
 const router = useRouter()
 const store = useShopStore()
 const quantity = ref(1)
+const mainImagePreview = ref({
+    show: false,
+    url: ''
+})
+
+const openMainImagePreview = () => {
+    const imageUrl = String(product.value?.image || '').trim()
+    if (!imageUrl) return
+    mainImagePreview.value = {
+        show: true,
+        url: imageUrl
+    }
+}
+
+const closeMainImagePreview = () => {
+    mainImagePreview.value.show = false
+}
+
+const onEscapeClosePreview = (event) => {
+    if (event.key !== 'Escape') return
+    if (!mainImagePreview.value.show) return
+    closeMainImagePreview()
+}
 
 // 确保进入详情页时有数据
 onMounted(() => {
     if (store.state.products.length === 0) store.fetchProducts()
+    window.addEventListener('keydown', onEscapeClosePreview)
+})
+
+onUnmounted(() => {
+    window.removeEventListener('keydown', onEscapeClosePreview)
 })
 
 const product = computed(() => store.state.products.find(p => p.id == route.params.id))
@@ -113,6 +158,70 @@ const buyNow = () => {
 </script>
 
 <style scoped>
+.detail-main-image {
+    cursor: zoom-in;
+}
+
+.detail-main-image:focus-visible {
+    outline: 2px solid #2563eb;
+    outline-offset: 2px;
+}
+
+.detail-image-preview-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 160;
+    background: rgba(0, 0, 0, 0.72);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1rem;
+}
+
+.detail-image-preview-card {
+    width: min(92vw, 520px);
+    background: #fff;
+    border-radius: 12px;
+    padding: 1rem;
+    text-align: center;
+    position: relative;
+}
+
+.detail-image-preview-close {
+    position: absolute;
+    right: 0.75rem;
+    top: 0.75rem;
+    border: none;
+    border-radius: 6px;
+    background: #f3f4f6;
+    color: #374151;
+    padding: 0.25rem 0.6rem;
+    cursor: pointer;
+    font-size: 0.75rem;
+}
+
+.detail-image-preview-title {
+    font-size: 0.95rem;
+    color: #111827;
+    font-weight: 700;
+    margin: 0.25rem 0 0.75rem;
+    padding-right: 2.5rem;
+}
+
+.detail-image-preview-image {
+    width: 100%;
+    max-height: min(78vh, 680px);
+    object-fit: contain;
+    border-radius: 10px;
+    background: #fff;
+}
+
+.detail-image-preview-tip {
+    margin-top: 0.6rem;
+    font-size: 0.8rem;
+    color: #6b7280;
+}
+
 @media (max-width: 639px) {
     .detail-qty-row {
         flex-wrap: wrap;
