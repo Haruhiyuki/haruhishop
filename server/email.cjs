@@ -1,7 +1,7 @@
 let nodemailer = null;
 try {
     nodemailer = require('nodemailer');
-} catch {}
+} catch { }
 
 const ORDER_STATUS_LABELS = Object.freeze({
     0: '已取消',
@@ -14,7 +14,7 @@ const ORDER_STATUS_LABELS = Object.freeze({
 
 const EMAIL_EVENTS = new Set([
     'order_created',
-    'payment_submitted',
+    'order_confirmed',
     'order_shipped',
     'order_completed',
     'order_cancelled'
@@ -103,9 +103,29 @@ const resolveOrderQueryUrl = ({ explicitOrderQueryUrl, publicSiteUrl, basePath }
     return `${siteUrl}${prefix}/query`;
 };
 
+const normalizeAuthMode = (value) => {
+    const raw = String(value || '').trim().toLowerCase();
+    if (['oauth2', 'oauth', 'xoauth2'].includes(raw)) return 'oauth2';
+    if (['password', 'pass', 'basic', 'login'].includes(raw)) return 'password';
+    return 'auto';
+};
+
+const normalizeMailProvider = (value) => {
+    const raw = String(value || '').trim().toLowerCase();
+    if (raw === 'resend') return 'resend';
+    if (raw === 'smtp') return 'smtp';
+    return 'auto';
+};
+
+const normalizeResendApiBaseUrl = (value) => {
+    const raw = String(value || 'https://api.resend.com').trim();
+    if (!raw) return 'https://api.resend.com';
+    return raw.replace(/\/+$/, '');
+};
+
 const statusTextByEvent = (eventKey, status) => {
     if (eventKey === 'order_created') return '待付款';
-    if (eventKey === 'payment_submitted') return '待确认';
+    if (eventKey === 'order_confirmed') return '待发货';
     if (eventKey === 'order_shipped') return '已发货';
     if (eventKey === 'order_completed') return '已完成';
     if (eventKey === 'order_cancelled') return '已取消';
@@ -114,7 +134,7 @@ const statusTextByEvent = (eventKey, status) => {
 
 const titleTextByEvent = (eventKey) => {
     if (eventKey === 'order_created') return '订单已创建';
-    if (eventKey === 'payment_submitted') return '支付已提交';
+    if (eventKey === 'order_confirmed') return '订单已确认';
     if (eventKey === 'order_shipped') return '订单已发货';
     if (eventKey === 'order_completed') return '订单已完成';
     if (eventKey === 'order_cancelled') return '订单已取消';
@@ -122,11 +142,11 @@ const titleTextByEvent = (eventKey) => {
 };
 
 const descriptionTextByEvent = (eventKey) => {
-    if (eventKey === 'order_created') return '我们已收到您的订单，请在规定时间内完成支付。';
-    if (eventKey === 'payment_submitted') return '我们已收到您的支付提交，正在等待人工核销。';
+    if (eventKey === 'order_created') return '我们已收到您的订单，请在24小时内完成支付。';
+    if (eventKey === 'order_confirmed') return '您的支付已确认，订单已进入待发货状态，我们将尽快安排发货。';
     if (eventKey === 'order_shipped') return '您的订单已发货，请留意物流动态。';
     if (eventKey === 'order_completed') return '订单已完成，感谢您的支持。';
-    if (eventKey === 'order_cancelled') return '订单已取消，如有疑问可联系管理员。';
+    if (eventKey === 'order_cancelled') return '因未验证到正确的支付状态，订单已取消，如有疑问可联系管理员。';
     return '您的订单状态已更新。';
 };
 
@@ -147,7 +167,7 @@ const buildOrderEmail = ({ eventKey, order, orderQueryUrl }) => {
         .map((item) => `${item?.name || '商品'} x${Number(item?.quantity) || 0}`)
         .join('；');
 
-    const subject = `[春日商城] ${title} - ${orderId}`;
+    const subject = `[春日商城] ${title}`;
 
     const queryHintHtml = orderQueryUrl
         ? `<p>订单查询入口：<a href="${escapeHtml(orderQueryUrl)}" target="_blank" rel="noreferrer">${escapeHtml(orderQueryUrl)}</a></p>`
@@ -215,14 +235,22 @@ const createEmailService = (options = {}) => {
     }
 
     const serviceEnabled = toBoolean(options.enabled, false);
+    const mailProvider = normalizeMailProvider(options.mailProvider);
     const smtpHost = String(options.smtpHost || '').trim();
     const smtpPort = toPositiveInt(options.smtpPort, 465);
     const smtpSecure = toBoolean(options.smtpSecure, true);
+    const smtpAuthMode = normalizeAuthMode(options.smtpAuthMode);
     const smtpUser = String(options.smtpUser || '').trim();
     const smtpPass = String(options.smtpPass || '').trim();
+    const oauth2ClientId = String(options.oauth2ClientId || '').trim();
+    const oauth2ClientSecret = String(options.oauth2ClientSecret || '').trim();
+    const oauth2RefreshToken = String(options.oauth2RefreshToken || '').trim();
+    const oauth2AccessToken = String(options.oauth2AccessToken || '').trim();
     const mailFromName = String(options.mailFromName || '春日商城').trim();
     const mailFromAddress = String(options.mailFromAddress || '').trim();
     const mailReplyTo = String(options.mailReplyTo || '').trim();
+    const resendApiKey = String(options.resendApiKey || '').trim();
+    const resendApiBaseUrl = normalizeResendApiBaseUrl(options.resendApiBaseUrl);
     const maxAttempts = toPositiveInt(options.maxAttempts, 5);
     const retryBackoffs = normalizeBackoffs(options.retryBackoffs);
     const workerIntervalMs = toPositiveInt(options.workerIntervalMs, 10000);
@@ -235,32 +263,196 @@ const createEmailService = (options = {}) => {
 
     let transporter = null;
     let unavailableReason = '';
+    let activeAuthMode = '';
+    let activeProvider = '';
+    let canSend = false;
+
+    const resolveAuthConfig = () => {
+        if (smtpAuthMode === 'oauth2') {
+            if (oauth2AccessToken) {
+                return {
+                    mode: 'oauth2',
+                    auth: {
+                        type: 'OAuth2',
+                        user: smtpUser,
+                        accessToken: oauth2AccessToken
+                    }
+                };
+            }
+
+            if (oauth2ClientId && oauth2ClientSecret && oauth2RefreshToken) {
+                return {
+                    mode: 'oauth2',
+                    auth: {
+                        type: 'OAuth2',
+                        user: smtpUser,
+                        clientId: oauth2ClientId,
+                        clientSecret: oauth2ClientSecret,
+                        refreshToken: oauth2RefreshToken
+                    }
+                };
+            }
+
+            return {
+                mode: 'oauth2',
+                auth: null,
+                reason: 'OAuth2 配置不完整（需 accessToken，或 clientId+clientSecret+refreshToken）'
+            };
+        }
+
+        if (smtpAuthMode === 'password') {
+            if (smtpPass) {
+                return {
+                    mode: 'password',
+                    auth: {
+                        user: smtpUser,
+                        pass: smtpPass
+                    }
+                };
+            }
+            return { mode: 'password', auth: null, reason: 'SMTP_PASS 未配置' };
+        }
+
+        if (oauth2AccessToken) {
+            return {
+                mode: 'oauth2',
+                auth: {
+                    type: 'OAuth2',
+                    user: smtpUser,
+                    accessToken: oauth2AccessToken
+                }
+            };
+        }
+
+        if (oauth2ClientId && oauth2ClientSecret && oauth2RefreshToken) {
+            return {
+                mode: 'oauth2',
+                auth: {
+                    type: 'OAuth2',
+                    user: smtpUser,
+                    clientId: oauth2ClientId,
+                    clientSecret: oauth2ClientSecret,
+                    refreshToken: oauth2RefreshToken
+                }
+            };
+        }
+
+        if (smtpPass) {
+            return {
+                mode: 'password',
+                auth: {
+                    user: smtpUser,
+                    pass: smtpPass
+                }
+            };
+        }
+
+        return { mode: 'auto', auth: null, reason: '未配置可用的 SMTP 鉴权信息' };
+    };
+
+    const resolveProvider = () => {
+        if (mailProvider === 'resend') return 'resend';
+        if (mailProvider === 'smtp') return 'smtp';
+        if (resendApiKey && typeof fetch === 'function') return 'resend';
+        return 'smtp';
+    };
+
+    const providerToUse = resolveProvider();
+
     if (!serviceEnabled) {
         unavailableReason = 'EMAIL_NOTIFICATIONS_ENABLED=false';
-    } else if (!nodemailer) {
-        unavailableReason = 'nodemailer 模块未安装';
-    } else if (!smtpHost || !smtpUser || !smtpPass || !mailFromAddress) {
-        unavailableReason = 'SMTP 配置不完整';
+    } else if (!mailFromAddress) {
+        unavailableReason = 'MAIL_FROM_ADDRESS 未配置';
+    } else if (providerToUse === 'resend') {
+        if (!resendApiKey) {
+            unavailableReason = 'Resend 配置不完整（需 RESEND_API_KEY）';
+        } else if (typeof fetch !== 'function') {
+            unavailableReason = '当前 Node 版本不支持 fetch，无法调用 Resend API';
+        } else {
+            activeProvider = 'resend';
+            canSend = true;
+        }
     } else {
-        transporter = nodemailer.createTransport({
-            host: smtpHost,
-            port: smtpPort,
-            secure: smtpSecure,
-            auth: {
-                user: smtpUser,
-                pass: smtpPass
+        if (!nodemailer) {
+            unavailableReason = 'nodemailer 模块未安装';
+        } else if (!smtpHost || !smtpUser) {
+            unavailableReason = 'SMTP 基础配置不完整（需 SMTP_HOST、SMTP_USER）';
+        } else {
+            const authConfig = resolveAuthConfig();
+            if (!authConfig.auth) {
+                unavailableReason = authConfig.reason || 'SMTP 鉴权配置不完整';
+            } else {
+                activeProvider = 'smtp';
+                activeAuthMode = authConfig.mode;
+                transporter = nodemailer.createTransport({
+                    host: smtpHost,
+                    port: smtpPort,
+                    secure: smtpSecure,
+                    auth: authConfig.auth
+                });
+                canSend = true;
             }
-        });
+        }
     }
 
-    const canSend = Boolean(transporter);
     if (!canSend) {
         logger.warn(`[Mail] 邮件通知不可用: ${unavailableReason}`);
+    } else if (activeProvider === 'resend') {
+        logger.log('[Mail] 邮件通知已启用（Resend API）');
     } else {
-        logger.log('[Mail] 邮件通知已启用（SMTP）');
+        logger.log(`[Mail] 邮件通知已启用（SMTP, auth=${activeAuthMode || smtpAuthMode || 'unknown'}）`);
     }
 
     const from = mailFromName ? `"${mailFromName.replace(/"/g, '')}" <${mailFromAddress}>` : mailFromAddress;
+
+    const sendMailViaSmtp = async (job) => {
+        if (!transporter) {
+            const error = new Error('SMTP transporter unavailable');
+            error.nonRetryable = true;
+            throw error;
+        }
+
+        const mailOptions = {
+            from,
+            to: String(job.toEmail || '').trim(),
+            subject: String(job.subject || '').trim(),
+            html: String(job.html || ''),
+            text: String(job.text || '')
+        };
+        if (mailReplyTo) mailOptions.replyTo = mailReplyTo;
+
+        await transporter.sendMail(mailOptions);
+    };
+
+    const sendMailViaResend = async (job) => {
+        const payload = {
+            from,
+            to: String(job.toEmail || '').trim(),
+            subject: String(job.subject || '').trim(),
+            html: String(job.html || ''),
+            text: String(job.text || '')
+        };
+        if (mailReplyTo) payload.reply_to = mailReplyTo;
+
+        const response = await fetch(`${resendApiBaseUrl}/emails`, {
+            method: 'POST',
+            headers: {
+                Authorization: `Bearer ${resendApiKey}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(payload)
+        });
+
+        if (response.ok) return;
+
+        const bodyText = await response.text().catch(() => '');
+        const detail = bodyText ? ` - ${bodyText}` : '';
+        const error = new Error(`Resend API 请求失败(${response.status})${detail}`);
+        if (response.status >= 400 && response.status < 500 && response.status !== 429) {
+            error.nonRetryable = true;
+        }
+        throw error;
+    };
 
     const insertJob = async ({
         orderId,
@@ -351,22 +543,18 @@ const createEmailService = (options = {}) => {
     };
 
     const sendMail = async (job) => {
-        if (!canSend || !transporter) {
+        if (!canSend) {
             const error = new Error(unavailableReason || 'mail service unavailable');
             error.nonRetryable = true;
             throw error;
         }
 
-        const mailOptions = {
-            from,
-            to: String(job.toEmail || '').trim(),
-            subject: String(job.subject || '').trim(),
-            html: String(job.html || ''),
-            text: String(job.text || '')
-        };
-        if (mailReplyTo) mailOptions.replyTo = mailReplyTo;
+        if (activeProvider === 'resend') {
+            await sendMailViaResend(job);
+            return;
+        }
 
-        await transporter.sendMail(mailOptions);
+        await sendMailViaSmtp(job);
     };
 
     const computeNextRunAt = (attempts) => {

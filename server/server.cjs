@@ -123,11 +123,19 @@ const COUPON_STATUS = Object.freeze({
 });
 const COUPON_DISCOUNT_TYPES = ['amount', 'percent'];
 const EMAIL_NOTIFICATIONS_ENABLED = String(process.env.EMAIL_NOTIFICATIONS_ENABLED || 'false');
+const MAIL_PROVIDER = process.env.MAIL_PROVIDER || 'smtp';
 const SMTP_HOST = process.env.SMTP_HOST || '';
 const SMTP_PORT = Number(process.env.SMTP_PORT || 465);
 const SMTP_SECURE = String(process.env.SMTP_SECURE || 'true');
+const SMTP_AUTH_MODE = process.env.SMTP_AUTH_MODE || 'auto';
 const SMTP_USER = process.env.SMTP_USER || '';
 const SMTP_PASS = process.env.SMTP_PASS || '';
+const OAUTH2_CLIENT_ID = process.env.OAUTH2_CLIENT_ID || '';
+const OAUTH2_CLIENT_SECRET = process.env.OAUTH2_CLIENT_SECRET || '';
+const OAUTH2_REFRESH_TOKEN = process.env.OAUTH2_REFRESH_TOKEN || '';
+const OAUTH2_ACCESS_TOKEN = process.env.OAUTH2_ACCESS_TOKEN || '';
+const RESEND_API_KEY = process.env.RESEND_API_KEY || '';
+const RESEND_API_BASE_URL = process.env.RESEND_API_BASE_URL || 'https://api.resend.com';
 const MAIL_FROM_NAME = process.env.MAIL_FROM_NAME || '春日商城';
 const MAIL_FROM_ADDRESS = process.env.MAIL_FROM_ADDRESS || '';
 const MAIL_REPLY_TO = process.env.MAIL_REPLY_TO || '';
@@ -183,11 +191,19 @@ const emailService = createEmailService({
     dbRun,
     logger: console,
     enabled: EMAIL_NOTIFICATIONS_ENABLED,
+    mailProvider: MAIL_PROVIDER,
     smtpHost: SMTP_HOST,
     smtpPort: SMTP_PORT,
     smtpSecure: SMTP_SECURE,
+    smtpAuthMode: SMTP_AUTH_MODE,
     smtpUser: SMTP_USER,
     smtpPass: SMTP_PASS,
+    oauth2ClientId: OAUTH2_CLIENT_ID,
+    oauth2ClientSecret: OAUTH2_CLIENT_SECRET,
+    oauth2RefreshToken: OAUTH2_REFRESH_TOKEN,
+    oauth2AccessToken: OAUTH2_ACCESS_TOKEN,
+    resendApiKey: RESEND_API_KEY,
+    resendApiBaseUrl: RESEND_API_BASE_URL,
     mailFromName: MAIL_FROM_NAME,
     mailFromAddress: MAIL_FROM_ADDRESS,
     mailReplyTo: MAIL_REPLY_TO,
@@ -1540,7 +1556,6 @@ app.post(apiPath('/orders/:id/payment'), async (req, res) => {
         await dbRun("UPDATE orders SET status = 5 WHERE id = ?", [orderId]);
         await dbRun('COMMIT');
         transactionStarted = false;
-        enqueueOrderEmailSafely('payment_submitted', orderId);
         res.json({ success: true, status: 5 });
     } catch (err) {
         if (transactionStarted) {
@@ -1585,6 +1600,7 @@ app.put(apiPath('/orders/:id/status'), requireAdminAuth, async (req, res) => {
 
         if (newStatus !== oldStatus) {
             if (newStatus === 0) notifyEventKey = 'order_cancelled';
+            if (newStatus === 2) notifyEventKey = 'order_confirmed';
             if (newStatus === 3) notifyEventKey = 'order_shipped';
             if (newStatus === 4) notifyEventKey = 'order_completed';
         }
