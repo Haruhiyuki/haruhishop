@@ -92,7 +92,6 @@
     <div v-if="mainImagePreview.show" class="detail-image-preview-overlay" @click.self="closeMainImagePreview">
         <div class="detail-image-preview-card">
             <button class="detail-image-preview-close" @click="closeMainImagePreview" aria-label="关闭预览">×</button>
-            <div class="detail-image-preview-title">{{ product.name }}</div>
             <img :src="mainImagePreview.url" :alt="`${product.name} 主图`" class="detail-image-preview-image">
         </div>
     </div>
