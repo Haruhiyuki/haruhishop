@@ -55,7 +55,7 @@
                     </div>
                     
                     <div v-if="product.shippingCost > 0" style="margin-bottom: 1rem; font-size: 0.75rem; color: #666;">
-                        <i class="fa fa-truck"></i> 基础运费: ¥{{ product.shippingCost }} (同组取最大)
+                        <i class="fa fa-truck"></i> 基础运费: ¥{{ product.shippingCost }} 
                     </div>
 
                     <div class="action-row">

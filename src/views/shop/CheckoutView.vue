@@ -66,7 +66,7 @@
             <hr style="border: none; border-top: 1px dashed #eee; margin: 1rem 0;">
             <div class="summary-row"><span style="color: #666;">商品总额</span><span>¥{{ cartTotal }}</span></div>
             <div class="summary-row">
-                <span style="color: #666;">运费 (智能组合，满{{ store.freeShippingThreshold }}元包邮)</span>
+                <span style="color: #666;">运费 (满{{ store.freeShippingThreshold }}元包邮)</span>
                 <span>¥{{ shippingFee }}</span>
             </div>
             <div style="margin: 0.75rem 0; padding: 0.75rem; background: #f9fafb; border: 1px dashed #d1d5db; border-radius: 8px;">
