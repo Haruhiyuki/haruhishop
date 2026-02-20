@@ -69,6 +69,22 @@
             <td>
               <div class="order-id">{{ order.id }}</div>
               <div class="text-sub">{{ new Date(order.created_at).toLocaleString() }}</div>
+              <div v-if="order.mergeMeta" class="merge-order-brief">
+                <div><strong>合并单（第 {{ getMergeCount(order.mergeMeta) }} 次）</strong></div>
+                <div v-for="part in getMergeParts(order.mergeMeta)" :key="part.orderId">
+                  {{ part.orderId }}: ¥{{ part.amount }}
+                </div>
+                <div v-if="(order.mergeMeta.parts || []).length > 4">...</div>
+                <div v-if="getLatestMergeHistory(order.mergeMeta)">
+                  最近: {{ getLatestMergeHistory(order.mergeMeta).sourceOrderId }} + {{ getLatestMergeHistory(order.mergeMeta).appendedOrderId }} -> {{ getLatestMergeHistory(order.mergeMeta).newOrderId }}
+                </div>
+                <div v-if="getLatestMergeHistory(order.mergeMeta)">
+                  本次: ¥{{ getLatestMergeHistory(order.mergeMeta).sourceAmount }} + ¥{{ getLatestMergeHistory(order.mergeMeta).appendedAmount }} = ¥{{ getLatestMergeHistory(order.mergeMeta).mergedAmount || order.total }}
+                </div>
+                <div v-if="Number(order.mergeMeta.shippingSaved) > 0" style="color: #16a34a;">
+                  运费返还: -¥{{ order.mergeMeta.shippingSaved }}
+                </div>
+              </div>
             </td>
             <td>
               <div v-for="(item, idx) in order.items" :key="idx" class="item-row">
@@ -264,6 +280,21 @@ const goNextPage = () => {
 }
 
 const getStatusLabel = (s) => (['已取消', '待付款', '待发货', '已发货', '已完成', '待确认'][s] || '未知')
+const getMergeParts = (mergeMeta = null) => {
+  const parts = Array.isArray(mergeMeta?.parts) ? mergeMeta.parts : []
+  return parts.slice(0, 4)
+}
+const getLatestMergeHistory = (mergeMeta = null) => {
+  const history = Array.isArray(mergeMeta?.history) ? mergeMeta.history : []
+  if (history.length === 0) return null
+  return history[history.length - 1]
+}
+const getMergeCount = (mergeMeta = null) => {
+  const parsed = Number(mergeMeta?.mergeCount)
+  if (Number.isInteger(parsed) && parsed > 0) return parsed
+  const history = Array.isArray(mergeMeta?.history) ? mergeMeta.history : []
+  return history.length || 1
+}
 
 const updateStatus = async (id, status) => {
   if (status === 0 && !confirm('取消订单将自动回滚库存，确定吗？')) return
@@ -496,6 +527,17 @@ button:disabled {
 .order-delete-btn {
   color: #ef4444;
   border-color: #fca5a5;
+}
+
+.merge-order-brief {
+  margin-top: 0.35rem;
+  padding: 0.35rem 0.45rem;
+  border-radius: 6px;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  color: #1e3a8a;
+  font-size: 0.73rem;
+  line-height: 1.45;
 }
 
 .contact-edit-grid {

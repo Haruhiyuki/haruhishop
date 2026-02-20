@@ -93,6 +93,7 @@ const STATUS_TRANSITIONS = {
 };
 const CANCELLABLE_STATUSES = [1, 2, 5];
 const SELF_SERVICE_CONTACT_EDITABLE_STATUSES = new Set([1, 2, 5]);
+const SELF_SERVICE_MERGEABLE_SOURCE_STATUSES = new Set([1, 2, 5]);
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'admin';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123456';
 const ADMIN_AUTH_SECRET = process.env.ADMIN_AUTH_SECRET || 'sos-admin-auth-secret-change-me';
@@ -161,8 +162,138 @@ const dbRun = (sql, params = []) =>
         });
     });
 
+const normalizeOrderMergeMeta = (rawValue) => {
+    const toMoney = (value) => Number((Number(value) || 0).toFixed(2));
+    const toStatus = (value) => {
+        const num = Number(value);
+        return Number.isInteger(num) ? num : null;
+    };
+    const cleanId = (value) => String(value || '').trim();
+    const dedupeParts = (parts) => {
+        const map = new Map();
+        for (const part of parts) {
+            const orderId = cleanId(part?.orderId);
+            if (!orderId) continue;
+            const prev = map.get(orderId);
+            if (prev) {
+                prev.amount = toMoney(prev.amount + toMoney(part.amount));
+                if (prev.statusBeforeMerge === null) prev.statusBeforeMerge = toStatus(part.statusBeforeMerge);
+                map.set(orderId, prev);
+            } else {
+                map.set(orderId, {
+                    orderId,
+                    amount: toMoney(part.amount),
+                    statusBeforeMerge: toStatus(part.statusBeforeMerge)
+                });
+            }
+        }
+        return [...map.values()];
+    };
+
+    const parsed = typeof rawValue === 'string' ? safeParse(rawValue, null) : rawValue;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+
+    const normalizedParts = Array.isArray(parsed.parts)
+        ? dedupeParts(parsed.parts)
+        : [];
+    if (normalizedParts.length === 0) {
+        const legacyParts = [];
+        const legacySourceOrderId = cleanId(parsed.sourceOrderId);
+        const legacySubmittedOrderId = cleanId(parsed.submittedOrderId);
+        if (legacySourceOrderId) {
+            legacyParts.push({
+                orderId: legacySourceOrderId,
+                amount: toMoney(parsed.sourceAmount),
+                statusBeforeMerge: null
+            });
+        }
+        if (legacySubmittedOrderId) {
+            legacyParts.push({
+                orderId: legacySubmittedOrderId,
+                amount: toMoney(parsed.appendedAmount),
+                statusBeforeMerge: null
+            });
+        }
+        normalizedParts.push(...dedupeParts(legacyParts));
+    }
+
+    const normalizedHistory = [];
+    if (Array.isArray(parsed.history)) {
+        for (const row of parsed.history) {
+            const sourceOrderId = cleanId(row?.sourceOrderId);
+            const appendedOrderId = cleanId(row?.appendedOrderId || row?.submittedOrderId);
+            const newOrderId = cleanId(row?.newOrderId || row?.mergedOrderId);
+            if (!sourceOrderId || !appendedOrderId || !newOrderId) continue;
+            normalizedHistory.push({
+                sourceOrderId,
+                appendedOrderId,
+                newOrderId,
+                sourceAmount: toMoney(row?.sourceAmount),
+                appendedAmount: toMoney(row?.appendedAmount),
+                mergedAmount: toMoney(row?.mergedAmount),
+                sourceShippingFee: toMoney(row?.sourceShippingFee),
+                appendedShippingFee: toMoney(row?.appendedShippingFee),
+                mergedShippingFee: toMoney(row?.mergedShippingFee),
+                shippingSaved: toMoney(row?.shippingSaved),
+                mergedAt: row?.mergedAt ? String(row.mergedAt) : null
+            });
+        }
+    }
+
+    if (normalizedHistory.length === 0) {
+        const sourceOrderId = cleanId(parsed.sourceOrderId);
+        const appendedOrderId = cleanId(parsed.submittedOrderId);
+        const newOrderId = cleanId(parsed.mergedOrderId);
+        if (sourceOrderId && appendedOrderId && newOrderId) {
+            normalizedHistory.push({
+                sourceOrderId,
+                appendedOrderId,
+                newOrderId,
+                sourceAmount: toMoney(parsed.sourceAmount),
+                appendedAmount: toMoney(parsed.appendedAmount),
+                mergedAmount: toMoney(parsed.mergedAmount),
+                sourceShippingFee: toMoney(parsed.sourceShippingFee),
+                appendedShippingFee: toMoney(parsed.appendedShippingFee),
+                mergedShippingFee: toMoney(parsed.mergedShippingFee),
+                shippingSaved: toMoney(parsed.shippingSaved),
+                mergedAt: parsed.mergedAt ? String(parsed.mergedAt) : null
+            });
+        }
+    }
+
+    const latestHistory = normalizedHistory.length > 0 ? normalizedHistory[normalizedHistory.length - 1] : null;
+    const mergedOrderId = cleanId(parsed.mergedOrderId || latestHistory?.newOrderId);
+    const sourceOrderId = cleanId(parsed.sourceOrderId || latestHistory?.sourceOrderId);
+    const submittedOrderId = cleanId(parsed.submittedOrderId || latestHistory?.appendedOrderId);
+
+    if (!mergedOrderId && normalizedParts.length === 0 && !sourceOrderId && !submittedOrderId) {
+        return null;
+    }
+
+    return {
+        mergedOrderId: mergedOrderId || null,
+        sourceOrderId: sourceOrderId || null,
+        submittedOrderId: submittedOrderId || null,
+        sourceAmount: toMoney(parsed.sourceAmount ?? latestHistory?.sourceAmount),
+        appendedAmount: toMoney(parsed.appendedAmount ?? latestHistory?.appendedAmount),
+        mergedAmount: toMoney(parsed.mergedAmount ?? latestHistory?.mergedAmount),
+        sourceShippingFee: toMoney(parsed.sourceShippingFee ?? latestHistory?.sourceShippingFee),
+        appendedShippingFee: toMoney(parsed.appendedShippingFee ?? latestHistory?.appendedShippingFee),
+        mergedShippingFee: toMoney(parsed.mergedShippingFee ?? latestHistory?.mergedShippingFee),
+        shippingSaved: toMoney(parsed.shippingSaved ?? latestHistory?.shippingSaved),
+        mergedAt: parsed.mergedAt ? String(parsed.mergedAt) : (latestHistory?.mergedAt || null),
+        mergeCount: Math.max(
+            Number.isInteger(Number(parsed.mergeCount)) ? Number(parsed.mergeCount) : 0,
+            normalizedHistory.length
+        ),
+        parts: normalizedParts,
+        history: normalizedHistory
+    };
+};
+
 const mapOrderRow = (row) => {
     if (!row) return null;
+    const mergeMeta = normalizeOrderMergeMeta(row.mergeMeta);
     return {
         ...row,
         total: Number(row.total) || 0,
@@ -170,6 +301,7 @@ const mapOrderRow = (row) => {
         discountAmount: Number(row.discountAmount) || 0,
         status: Number(row.status),
         items: safeParse(row.items, []),
+        mergeMeta,
         contact: {
             name: row.contactName,
             phone: row.contactPhone,
@@ -529,6 +661,104 @@ const calculateOrderPricing = (normalizedItems, productRowsById) => {
         shippingFee,
         originalTotal
     };
+};
+
+const normalizePricedItemForMerge = (item = {}) => {
+    const quantity = Number(item.quantity);
+    if (!Number.isInteger(quantity) || quantity <= 0) return null;
+
+    const parsedId = Number(item.id);
+    const productId = Number.isInteger(parsedId) && parsedId > 0 ? parsedId : null;
+    const price = roundMoney(Math.max(0, Number(item.price) || 0));
+    const originalPrice = roundMoney(Math.max(price, Number(item.originalPrice) || price));
+    const discountPrice = normalizeDiscountPrice(item.discountPrice, originalPrice);
+    const shippingTag = toShippingGroupKey(item.shippingTag);
+    const shippingCost = roundMoney(Math.max(0, Number(item.shippingCost) || 0));
+
+    return {
+        id: productId,
+        name: String(item.name || '').trim() || (productId ? `商品${productId}` : '未命名商品'),
+        quantity,
+        price,
+        originalPrice,
+        discountPrice,
+        shippingTag,
+        shippingCost
+    };
+};
+
+const mergePricedItems = (...itemGroups) => {
+    const merged = new Map();
+
+    for (const group of itemGroups) {
+        if (!Array.isArray(group)) continue;
+        for (const rawItem of group) {
+            const item = normalizePricedItemForMerge(rawItem);
+            if (!item) continue;
+
+            const key = JSON.stringify([
+                item.id === null ? '' : item.id,
+                item.name,
+                item.price,
+                item.originalPrice,
+                item.discountPrice === null ? '' : item.discountPrice,
+                item.shippingTag,
+                item.shippingCost
+            ]);
+
+            const existing = merged.get(key);
+            if (existing) {
+                existing.quantity += item.quantity;
+            } else {
+                merged.set(key, { ...item });
+            }
+        }
+    }
+
+    return [...merged.values()].filter((item) => Number(item.quantity) > 0);
+};
+
+const calculatePricingFromPricedItems = (pricedItems) => {
+    const normalized = mergePricedItems(pricedItems);
+    const shippingGroups = {};
+    let productsTotal = 0;
+
+    for (const item of normalized) {
+        productsTotal += Number(item.price || 0) * Number(item.quantity || 0);
+        const shippingTag = toShippingGroupKey(item.shippingTag);
+        const shippingCost = roundMoney(Number(item.shippingCost) || 0);
+        if (shippingGroups[shippingTag] === undefined || shippingCost > shippingGroups[shippingTag]) {
+            shippingGroups[shippingTag] = shippingCost;
+        }
+    }
+
+    productsTotal = roundMoney(productsTotal);
+    const rawShippingFee = roundMoney(Object.values(shippingGroups).reduce((sum, fee) => sum + Number(fee || 0), 0));
+    const shippingFee = productsTotal >= FREE_SHIPPING_THRESHOLD ? 0 : rawShippingFee;
+    const originalTotal = roundMoney(productsTotal + shippingFee);
+
+    return {
+        pricedItems: normalized,
+        productsTotal,
+        shippingFee,
+        originalTotal
+    };
+};
+
+const buildOrderId = (now = new Date()) => {
+    const datePart = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
+    const timePart = `${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}${String(now.getSeconds()).padStart(2, '0')}${String(now.getMilliseconds()).padStart(3, '0')}`;
+    const randPart = String(Math.floor(Math.random() * 10000)).padStart(4, '0');
+    return `SOS-${datePart}-${timePart}-${randPart}`;
+};
+
+const generateUniqueOrderId = async (maxRetries = 10) => {
+    for (let i = 0; i < maxRetries; i += 1) {
+        const candidate = buildOrderId();
+        const exists = await dbGet('SELECT id FROM orders WHERE id = ?', [candidate]);
+        if (!exists) return candidate;
+    }
+    throw new Error('生成新订单号失败，请稍后重试');
 };
 
 if (
@@ -1285,8 +1515,8 @@ app.get(apiPath('/orders'), requireAdminAuth, (req, res) => {
         params.push(numericStatus);
     }
     if (keyword) {
-        conditions.push('(id LIKE ? OR contactName LIKE ? OR contactPhone LIKE ?)');
-        params.push(`%${keyword}%`, `%${keyword}%`, `%${keyword}%`);
+        conditions.push('(id LIKE ? OR contactName LIKE ? OR contactPhone LIKE ? OR mergeMeta LIKE ?)');
+        params.push(`%${keyword}%`, `%${keyword}%`, `%${keyword}%`, `%${keyword}%`);
     }
 
     const whereSql = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
@@ -1301,19 +1531,7 @@ app.get(apiPath('/orders'), requireAdminAuth, (req, res) => {
 
         db.all(sql, [...params, pageSize, offset], (err, rows) => {
             if (err) return res.status(500).json({ error: err.message });
-            const orders = rows.map((o) => ({
-                ...o,
-                items: safeParse(o.items, []),
-                contact: { // 组装回前端习惯的结构
-                    name: o.contactName,
-                    phone: o.contactPhone,
-                    email: o.contactEmail,
-                    province: o.province,
-                    city: o.city,
-                    district: o.district,
-                    addressDetail: o.addressDetail
-                }
-            }));
+            const orders = rows.map((row) => mapOrderRow(row));
             res.json({
                 items: orders,
                 pagination: { page, pageSize, total, totalPages },
@@ -1352,27 +1570,13 @@ app.get(apiPath('/admin/dashboard-summary'), requireAdminAuth, async (req, res) 
 
 // 2. 创建订单 (事务 + 锁库存)
 app.post(apiPath('/orders'), async (req, res) => {
-    const { id, items, contact, total, couponCode: rawCouponCode } = req.body || {};
+    const { id, items, contact, total, couponCode: rawCouponCode, mergeTarget } = req.body || {};
     let transactionStarted = false;
 
     try {
         if (!id || typeof id !== 'string') throw createBadRequestError('订单号不能为空');
         if (!Array.isArray(items) || items.length === 0) throw createBadRequestError('订单商品不能为空');
-        if (!contact || typeof contact !== 'object') throw createBadRequestError('收货信息不能为空');
-
-        const contactName = String(contact.name || '').trim();
-        const contactPhone = String(contact.phone || '').trim();
-        const contactEmail = String(contact.email || '').trim();
-        const contactProvince = String(contact.province || '').trim();
-        const contactCity = String(contact.city || '').trim();
-        const contactDistrict = String(contact.district || '').trim();
-        const contactAddressDetail = String(contact.addressDetail || contact.address || '').trim();
-
-        if (!contactName) throw createBadRequestError('收货人姓名不能为空');
-        if (!/^1[3-9]\d{9}$/.test(contactPhone)) throw createBadRequestError('手机号格式错误');
-        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(contactEmail)) throw createBadRequestError('邮箱格式错误');
-        if (!contactProvince || !contactCity || !contactDistrict) throw createBadRequestError('省市区信息不完整');
-        if (!contactAddressDetail) throw createBadRequestError('详细地址不能为空');
+        const normalizedContact = normalizeOrderContactInput(contact);
 
         const normalizedItems = items.map((item, index) => {
             const productId = Number(item.id);
@@ -1391,6 +1595,14 @@ app.post(apiPath('/orders'), async (req, res) => {
             throw createBadRequestError('订单金额无效');
         }
         const couponCode = normalizeCouponCode(rawCouponCode);
+        const mergeOrderId = String(mergeTarget?.orderId || '').trim();
+        const mergePhoneLast4 = String(mergeTarget?.phoneLast4 || '').trim();
+        const shouldMerge = Boolean(mergeOrderId || mergePhoneLast4);
+        if (shouldMerge) {
+            if (!mergeOrderId) throw createBadRequestError('请输入待合并订单号');
+            if (!/^\d{4}$/.test(mergePhoneLast4)) throw createBadRequestError('请填写手机号后四位');
+            if (mergeOrderId === id) throw createBadRequestError('待合并订单号不能与当前订单号相同');
+        }
 
         await dbRun('BEGIN IMMEDIATE TRANSACTION');
         transactionStarted = true;
@@ -1429,9 +1641,152 @@ app.post(apiPath('/orders'), async (req, res) => {
             couponDiscountAmount = evaluatedCoupon.discountAmount;
         }
 
-        const serverTotal = roundMoney(Math.max(0, pricing.originalTotal - couponDiscountAmount));
-        if (Math.abs(clientTotal - serverTotal) > 0.01) {
+        const currentOrderServerTotal = roundMoney(Math.max(0, pricing.originalTotal - couponDiscountAmount));
+        if (!shouldMerge && Math.abs(clientTotal - currentOrderServerTotal) > 0.01) {
             throw createBadRequestError('订单金额已变化，请刷新页面后重试');
+        }
+
+        let finalOrderId = id;
+        let finalPricedItems = pricing.pricedItems;
+        let finalOriginalTotal = pricing.originalTotal;
+        let finalDiscountAmount = couponDiscountAmount;
+        let finalServerTotal = currentOrderServerTotal;
+        let finalCouponCode = appliedCoupon ? appliedCoupon.code : null;
+        let mergeMeta = null;
+        let sourceOrder = null;
+        let sourceCouponCode = '';
+
+        if (shouldMerge) {
+            sourceOrder = await dbGet('SELECT * FROM orders WHERE id = ?', [mergeOrderId]);
+            if (!sourceOrder) throw createBadRequestError('待合并订单不存在');
+            if (!SELF_SERVICE_MERGEABLE_SOURCE_STATUSES.has(Number(sourceOrder.status))) {
+                throw createBadRequestError('仅支持合并未发货订单');
+            }
+
+            const expectedLast4 = extractPhoneLast4(sourceOrder.contactPhone);
+            if (!expectedLast4 || expectedLast4 !== mergePhoneLast4) {
+                throw createBadRequestError('手机号后四位校验失败');
+            }
+
+            sourceCouponCode = normalizeCouponCode(sourceOrder.couponCode);
+            if (sourceCouponCode && couponCode) {
+                throw createBadRequestError('暂不支持两个订单都使用优惠券后再合并');
+            }
+
+            const sourceMergeMeta = normalizeOrderMergeMeta(sourceOrder.mergeMeta);
+            const sourceItems = mergePricedItems(safeParse(sourceOrder.items, []));
+            if (sourceItems.length === 0) {
+                throw createBadRequestError('待合并订单商品数据异常，无法合并');
+            }
+
+            const sourcePricing = calculatePricingFromPricedItems(sourceItems);
+            const sourceDiscountAmount = roundMoney(Number(sourceOrder.discountAmount) || 0);
+            const sourceAmount = roundMoney(Number(sourceOrder.total) || 0);
+            const mergedItems = mergePricedItems(sourceItems, pricing.pricedItems);
+            const mergedPricing = calculatePricingFromPricedItems(mergedItems);
+            const shippingSaved = roundMoney(
+                Math.max(0, sourcePricing.shippingFee + pricing.shippingFee - mergedPricing.shippingFee)
+            );
+            const mergeTime = new Date().toISOString();
+
+            finalOrderId = await generateUniqueOrderId();
+            finalPricedItems = mergedPricing.pricedItems;
+            finalOriginalTotal = mergedPricing.originalTotal;
+            finalDiscountAmount = roundMoney(sourceDiscountAmount + couponDiscountAmount);
+            finalServerTotal = roundMoney(Math.max(0, finalOriginalTotal - finalDiscountAmount));
+            finalCouponCode = sourceCouponCode || (appliedCoupon ? appliedCoupon.code : null) || null;
+
+            const sourceParts =
+                Array.isArray(sourceMergeMeta?.parts) && sourceMergeMeta.parts.length > 0
+                    ? sourceMergeMeta.parts.map((part) => ({
+                        orderId: String(part?.orderId || '').trim(),
+                        amount: roundMoney(part?.amount),
+                        statusBeforeMerge: Number.isInteger(Number(part?.statusBeforeMerge))
+                            ? Number(part.statusBeforeMerge)
+                            : null
+                    })).filter((part) => part.orderId)
+                    : [
+                        {
+                            orderId: sourceOrder.id,
+                            amount: sourceAmount,
+                            statusBeforeMerge: Number(sourceOrder.status)
+                        }
+                    ];
+
+            const partsByOrderId = new Map();
+            for (const part of sourceParts) {
+                const existing = partsByOrderId.get(part.orderId);
+                if (existing) {
+                    existing.amount = roundMoney(existing.amount + part.amount);
+                } else {
+                    partsByOrderId.set(part.orderId, { ...part });
+                }
+            }
+            if (partsByOrderId.has(id)) {
+                const existing = partsByOrderId.get(id);
+                existing.amount = roundMoney(existing.amount + currentOrderServerTotal);
+                partsByOrderId.set(id, existing);
+            } else {
+                partsByOrderId.set(id, {
+                    orderId: id,
+                    amount: currentOrderServerTotal,
+                    statusBeforeMerge: 1
+                });
+            }
+
+            const sourceHistory =
+                Array.isArray(sourceMergeMeta?.history)
+                    ? sourceMergeMeta.history
+                        .map((row) => ({
+                            sourceOrderId: String(row?.sourceOrderId || '').trim(),
+                            appendedOrderId: String(row?.appendedOrderId || row?.submittedOrderId || '').trim(),
+                            newOrderId: String(row?.newOrderId || row?.mergedOrderId || '').trim(),
+                            sourceAmount: roundMoney(row?.sourceAmount),
+                            appendedAmount: roundMoney(row?.appendedAmount),
+                            mergedAmount: roundMoney(row?.mergedAmount),
+                            sourceShippingFee: roundMoney(row?.sourceShippingFee),
+                            appendedShippingFee: roundMoney(row?.appendedShippingFee),
+                            mergedShippingFee: roundMoney(row?.mergedShippingFee),
+                            shippingSaved: roundMoney(row?.shippingSaved),
+                            mergedAt: row?.mergedAt ? String(row.mergedAt) : null
+                        }))
+                        .filter((row) => row.sourceOrderId && row.appendedOrderId && row.newOrderId)
+                    : [];
+            const currentHistory = {
+                sourceOrderId: sourceOrder.id,
+                appendedOrderId: id,
+                newOrderId: finalOrderId,
+                sourceAmount,
+                appendedAmount: currentOrderServerTotal,
+                mergedAmount: finalServerTotal,
+                sourceShippingFee: sourcePricing.shippingFee,
+                appendedShippingFee: pricing.shippingFee,
+                mergedShippingFee: mergedPricing.shippingFee,
+                shippingSaved,
+                mergedAt: mergeTime
+            };
+            const mergedHistory = [...sourceHistory, currentHistory];
+
+            mergeMeta = {
+                mergedOrderId: finalOrderId,
+                sourceOrderId: sourceOrder.id,
+                submittedOrderId: id,
+                sourceAmount,
+                appendedAmount: currentOrderServerTotal,
+                mergedAmount: finalServerTotal,
+                sourceShippingFee: sourcePricing.shippingFee,
+                appendedShippingFee: pricing.shippingFee,
+                mergedShippingFee: mergedPricing.shippingFee,
+                shippingSaved,
+                mergedAt: mergeTime,
+                mergeCount: mergedHistory.length,
+                parts: [...partsByOrderId.values()],
+                history: mergedHistory
+            };
+        }
+
+        if (shouldMerge && Math.abs(clientTotal - finalServerTotal) > 0.01) {
+            throw createBadRequestError('合并后订单金额已变化，请重新校验后重试');
         }
 
         for (const [productId, totalQty] of quantityByProductId) {
@@ -1439,51 +1794,66 @@ app.post(apiPath('/orders'), async (req, res) => {
         }
 
         const sql = `INSERT INTO orders
-            (id, total, originalTotal, discountAmount, couponCode, items, contactName, contactPhone, contactEmail, province, city, district, addressDetail, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+            (id, total, originalTotal, discountAmount, couponCode, mergeMeta, items, contactName, contactPhone, contactEmail, province, city, district, addressDetail, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
 
         const params = [
-            id,
-            serverTotal,
-            pricing.originalTotal,
-            couponDiscountAmount,
-            appliedCoupon ? appliedCoupon.code : null,
-            JSON.stringify(pricing.pricedItems),
-            contactName,
-            contactPhone,
-            contactEmail,
-            contactProvince,
-            contactCity,
-            contactDistrict,
-            contactAddressDetail,
+            finalOrderId,
+            finalServerTotal,
+            finalOriginalTotal,
+            finalDiscountAmount,
+            finalCouponCode,
+            mergeMeta ? JSON.stringify(mergeMeta) : null,
+            JSON.stringify(finalPricedItems),
+            normalizedContact.contactName,
+            normalizedContact.contactPhone,
+            normalizedContact.contactEmail,
+            normalizedContact.contactProvince,
+            normalizedContact.contactCity,
+            normalizedContact.contactDistrict,
+            normalizedContact.contactAddressDetail,
             1 // 状态1: 待付款
         ];
 
         await dbRun(sql, params);
+
+        if (sourceOrder && sourceCouponCode) {
+            await dbRun(
+                `UPDATE coupons
+                 SET usedOrderId = ?
+                 WHERE code = ? AND usedOrderId = ? AND status = ?`,
+                [finalOrderId, sourceCouponCode, sourceOrder.id, COUPON_STATUS.USED]
+            );
+        }
 
         if (appliedCoupon) {
             const result = await dbRun(
                 `UPDATE coupons
                  SET status = ?, usedOrderId = ?, used_at = CURRENT_TIMESTAMP
                  WHERE id = ? AND status = ?`,
-                [COUPON_STATUS.USED, id, appliedCoupon.id, COUPON_STATUS.UNUSED]
+                [COUPON_STATUS.USED, finalOrderId, appliedCoupon.id, COUPON_STATUS.UNUSED]
             );
             if (Number(result.changes) !== 1) {
                 throw createBadRequestError('优惠券已被使用，请更换后重试');
             }
         }
 
+        if (sourceOrder) {
+            await dbRun('DELETE FROM orders WHERE id = ?', [sourceOrder.id]);
+        }
+
         await dbRun('COMMIT');
         transactionStarted = false;
-        enqueueOrderEmailSafely('order_created', id);
+        enqueueOrderEmailSafely('order_created', finalOrderId);
 
         res.json({
             success: true,
-            orderId: id,
-            total: serverTotal,
-            originalTotal: pricing.originalTotal,
-            discountAmount: couponDiscountAmount,
-            couponCode: appliedCoupon ? appliedCoupon.code : null
+            orderId: finalOrderId,
+            total: finalServerTotal,
+            originalTotal: finalOriginalTotal,
+            discountAmount: finalDiscountAmount,
+            couponCode: finalCouponCode,
+            mergeMeta
         });
     } catch (err) {
         if (transactionStarted) {
@@ -1520,8 +1890,9 @@ app.post(apiPath('/orders'), async (req, res) => {
 
 // 3. 按订单号查询单个订单 (前台用)
 app.get(apiPath('/orders/:id'), (req, res) => {
-    db.get("SELECT * FROM orders WHERE id = ?", [req.params.id], (err, order) => {
+    db.get("SELECT * FROM orders WHERE id = ?", [req.params.id], (err, orderRow) => {
         if (err) return res.status(500).json({ error: err.message });
+        const order = mapOrderRow(orderRow);
         if (!order) return res.status(404).json({ error: '订单不存在' });
 
         const adminPayload = verifyAdminToken(extractBearerToken(req));
@@ -1537,19 +1908,7 @@ app.get(apiPath('/orders/:id'), (req, res) => {
             }
         }
 
-        res.json({
-            ...order,
-            items: safeParse(order.items, []),
-            contact: {
-                name: order.contactName,
-                phone: order.contactPhone,
-                email: order.contactEmail,
-                province: order.province,
-                city: order.city,
-                district: order.district,
-                addressDetail: order.addressDetail
-            }
-        });
+        res.json(order);
     });
 });
 

@@ -51,6 +51,66 @@
                 订单提交后系统将为您锁定库存，请在 24 小时内完成支付。
             </div>
         </div>
+
+        <div class="form-card">
+            <div class="merge-title-row">
+                <h3 class="section-title" style="margin-bottom: 0;">订单合并</h3>
+                <label class="merge-toggle">
+                    <input v-model="mergeForm.enabled" type="checkbox">
+                    <span>合并到旧订单</span>
+                </label>
+            </div>
+            <p style="margin: 0.5rem 0 0; font-size: 0.8rem; color: #6b7280;">
+                支持合并所有未发货订单（待付款/待确认/待发货），需要校验完整订单号与手机号后四位。
+            </p>
+
+            <div v-if="mergeForm.enabled" class="merge-panel">
+                <div class="merge-grid">
+                    <input
+                        v-model.trim="mergeForm.orderId"
+                        type="text"
+                        class="input-field"
+                        placeholder="旧订单完整订单号"
+                    >
+                    <input
+                        v-model.trim="mergeForm.phoneLast4"
+                        type="text"
+                        class="input-field"
+                        placeholder="旧订单手机号后四位"
+                        maxlength="4"
+                        inputmode="numeric"
+                    >
+                </div>
+                <div class="merge-actions">
+                    <button
+                        class="market-btn btn-ghost"
+                        :disabled="mergeValidating"
+                        @click="verifyMergeTarget"
+                    >
+                        {{ mergeValidating ? '校验中...' : '校验并计算合并金额' }}
+                    </button>
+                </div>
+                <p v-if="mergeError" class="merge-error">{{ mergeError }}</p>
+                <div v-else-if="mergePreview" class="merge-preview">
+                    <div class="merge-preview-row">
+                        <span>旧订单金额</span>
+                        <span>¥{{ mergePreview.total }}</span>
+                    </div>
+                    <div class="merge-preview-row">
+                        <span>本次下单金额</span>
+                        <span>¥{{ payableTotal }}</span>
+                    </div>
+                    <div class="merge-preview-row" v-if="shippingRefundEstimate > 0">
+                        <span>合并运费返还</span>
+                        <span style="color: #16a34a;">-¥{{ shippingRefundEstimate }}</span>
+                    </div>
+                    <div class="merge-preview-total">
+                        <span>合并后应付</span>
+                        <span>¥{{ mergedPayableEstimate }}</span>
+                    </div>
+                </div>
+            </div>
+        </div>
     </div>
 
     <!-- 右侧概览 -->
@@ -101,11 +161,19 @@
                 <span style="color: #666;">优惠减免</span>
                 <span style="color: #16a34a;">-¥{{ discountAmount }}</span>
             </div>
+            <div v-if="mergeForm.enabled && mergePreview" class="summary-row">
+                <span style="color: #666;">旧订单金额</span>
+                <span>¥{{ mergePreview.total }}</span>
+            </div>
+            <div v-if="mergeForm.enabled && mergePreview && shippingRefundEstimate > 0" class="summary-row">
+                <span style="color: #666;">合并运费返还</span>
+                <span style="color: #16a34a;">-¥{{ shippingRefundEstimate }}</span>
+            </div>
             <div class="total-row">
                 <span style="font-weight: bold; color: #374151;">应付总额</span>
-                <span class="total-price">¥{{ payableTotal }}</span>
+                <span class="total-price">¥{{ finalPayableTotal }}</span>
             </div>
-            <button @click="submitOrder" :disabled="isSubmitting || isApplyingCoupon" class="market-btn primary-action" style="width: 100%; margin-top: 1.5rem; padding: 0.75rem;">
+            <button @click="submitOrder" :disabled="isSubmitting || isApplyingCoupon || mergeValidating" class="market-btn primary-action" style="width: 100%; margin-top: 1.5rem; padding: 0.75rem;">
                 {{ isSubmitting ? '提交中...' : '提交订单' }}
             </button>
         </div>
@@ -118,6 +186,7 @@ import { reactive, computed, ref, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useShopStore } from '@/stores/shopStore'
 import { getAddressData } from '@/utils/chinaDivision'
+import { resolveApiPath } from '@/utils/runtimePaths'
 
 const store = useShopStore()
 const router = useRouter()
@@ -128,6 +197,39 @@ const loadingAddress = ref(false)
 const couponCode = ref('')
 const appliedCoupon = ref(null)
 const isApplyingCoupon = ref(false)
+const mergeForm = reactive({
+    enabled: false,
+    orderId: '',
+    phoneLast4: ''
+})
+const mergePreview = ref(null)
+const mergeError = ref('')
+const mergeValidating = ref(false)
+
+const roundMoney = (value) => Number((Number(value) || 0).toFixed(2))
+const toShippingGroupKey = (value) => String(value || 'default').trim() || 'default'
+const sumItemsAmount = (items = []) =>
+    roundMoney((Array.isArray(items) ? items : []).reduce((sum, item) => {
+        const quantity = Number(item?.quantity) || 0
+        const price = Number(item?.price) || 0
+        return sum + price * quantity
+    }, 0))
+
+const calculateShippingByItems = (items = [], productsTotal = 0) => {
+    const totalProducts = roundMoney(productsTotal)
+    if (totalProducts >= Number(store.freeShippingThreshold || 0)) return 0
+
+    const groups = {}
+    ;(Array.isArray(items) ? items : []).forEach((item) => {
+        const key = toShippingGroupKey(item?.shippingTag)
+        const fee = roundMoney(Number(item?.shippingCost) || 0)
+        if (groups[key] === undefined || fee > groups[key]) {
+            groups[key] = fee
+        }
+    })
+
+    return roundMoney(Object.values(groups).reduce((sum, fee) => sum + Number(fee || 0), 0))
+}
 
 const cart = computed(() => store.state.cart)
 const cartTotal = store.cartTotal
@@ -135,6 +237,26 @@ const shippingFee = store.shippingFee
 const orderOriginalTotal = computed(() => Number((cartTotal.value + shippingFee.value).toFixed(2)))
 const discountAmount = computed(() => Number(appliedCoupon.value?.discountAmount || 0))
 const payableTotal = computed(() => Number(Math.max(0, orderOriginalTotal.value - discountAmount.value).toFixed(2)))
+const oldOrderProductsTotal = computed(() => sumItemsAmount(mergePreview.value?.items || []))
+const oldOrderShippingFee = computed(() => {
+    if (!mergePreview.value) return 0
+    return roundMoney(Math.max(0, Number(mergePreview.value.originalTotal || 0) - oldOrderProductsTotal.value))
+})
+const mergedShippingFeeEstimate = computed(() => {
+    if (!mergeForm.enabled || !mergePreview.value) return shippingFee.value
+    const mergedItems = [...(mergePreview.value.items || []), ...cart.value]
+    const mergedProductsTotal = roundMoney(oldOrderProductsTotal.value + cartTotal.value)
+    return calculateShippingByItems(mergedItems, mergedProductsTotal)
+})
+const shippingRefundEstimate = computed(() => {
+    if (!mergeForm.enabled || !mergePreview.value) return 0
+    return roundMoney(Math.max(0, oldOrderShippingFee.value + shippingFee.value - mergedShippingFeeEstimate.value))
+})
+const mergedPayableEstimate = computed(() => {
+    if (!mergeForm.enabled || !mergePreview.value) return payableTotal.value
+    return roundMoney(Math.max(0, Number(mergePreview.value.total || 0) + payableTotal.value - shippingRefundEstimate.value))
+})
+const finalPayableTotal = computed(() => (mergeForm.enabled && mergePreview.value ? mergedPayableEstimate.value : payableTotal.value))
 
 // 加载地址数据
 onMounted(async () => {
@@ -203,6 +325,62 @@ watch([cartTotal, shippingFee], () => {
     store.showNotification('订单金额已变化，请重新校验优惠券')
 })
 
+watch(() => mergeForm.enabled, (enabled) => {
+    if (enabled) return
+    mergePreview.value = null
+    mergeError.value = ''
+    mergeForm.orderId = ''
+    mergeForm.phoneLast4 = ''
+})
+
+watch(() => [mergeForm.orderId, mergeForm.phoneLast4], () => {
+    if (!mergeForm.enabled) return
+    mergePreview.value = null
+    mergeError.value = ''
+})
+
+const verifyMergeTarget = async () => {
+    mergeError.value = ''
+    mergePreview.value = null
+
+    const orderId = mergeForm.orderId.trim()
+    const phoneTail = mergeForm.phoneLast4.trim()
+    if (!orderId) {
+        mergeError.value = '请输入待合并订单号'
+        return
+    }
+    if (!/^\d{4}$/.test(phoneTail)) {
+        mergeError.value = '请输入手机号后四位'
+        return
+    }
+
+    mergeValidating.value = true
+    try {
+        const params = new URLSearchParams({ phoneLast4: phoneTail })
+        const response = await fetch(`${resolveApiPath(`/orders/${encodeURIComponent(orderId)}`)}?${params.toString()}`)
+        const data = await response.json().catch(() => ({}))
+        if (!response.ok) {
+            mergeError.value = data.error || '待合并订单校验失败'
+            return
+        }
+
+        if (![1, 2, 5].includes(Number(data.status))) {
+            mergeError.value = '仅支持合并未发货订单'
+            return
+        }
+        if (data.couponCode && appliedCoupon.value?.code) {
+            mergeError.value = '旧订单已使用优惠券，请先清除本次优惠券再合并'
+            return
+        }
+
+        mergePreview.value = data
+    } catch (_) {
+        mergeError.value = '网络错误，请稍后重试'
+    } finally {
+        mergeValidating.value = false
+    }
+}
+
 const submitOrder = async () => {
     if (isSubmitting.value) return
 
@@ -212,6 +390,24 @@ const submitOrder = async () => {
         return
     }
     if (cart.value.length === 0) return
+    if (mergeForm.enabled) {
+        if (!mergeForm.orderId.trim()) {
+            store.showNotification('请输入待合并订单号')
+            return
+        }
+        if (!/^\d{4}$/.test(mergeForm.phoneLast4.trim())) {
+            store.showNotification('请输入手机号后四位')
+            return
+        }
+        if (!mergePreview.value || mergePreview.value.id !== mergeForm.orderId.trim()) {
+            store.showNotification('请先校验待合并订单')
+            return
+        }
+        if (mergePreview.value.couponCode && appliedCoupon.value?.code) {
+            store.showNotification('旧订单已使用优惠券，请先清除本次优惠券再合并')
+            return
+        }
+    }
 
     isSubmitting.value = true
     
@@ -225,8 +421,12 @@ const submitOrder = async () => {
         id,
         items: cart.value,
         contact: form,
-        total: payableTotal.value,
-        couponCode: appliedCoupon.value?.code || ''
+        total: finalPayableTotal.value,
+        couponCode: appliedCoupon.value?.code || '',
+        mergeTarget: mergeForm.enabled ? {
+            orderId: mergeForm.orderId.trim(),
+            phoneLast4: mergeForm.phoneLast4.trim()
+        } : null
     }
 
     const createdOrder = await store.createOrderBackend(orderData)
@@ -234,12 +434,15 @@ const submitOrder = async () => {
     isSubmitting.value = false
     
     if (createdOrder) {
+        const finalOrderId = createdOrder.orderId || id
         store.setOrder({
             ...orderData,
-            total: createdOrder.total ?? payableTotal.value,
+            id: finalOrderId,
+            total: createdOrder.total ?? finalPayableTotal.value,
             originalTotal: createdOrder.originalTotal ?? orderOriginalTotal.value,
             discountAmount: createdOrder.discountAmount ?? discountAmount.value,
-            couponCode: createdOrder.couponCode || appliedCoupon.value?.code || null
+            couponCode: createdOrder.couponCode || appliedCoupon.value?.code || null,
+            mergeMeta: createdOrder.mergeMeta || null
         })
         store.clearCart()
         router.push('/payment')
@@ -275,6 +478,58 @@ textarea.input-field { resize: none; height: 6rem; }
 .coupon-row { display: flex; gap: 0.5rem; }
 .coupon-input { margin: 0; height: 2.25rem; flex: 1; }
 .coupon-btn { white-space: nowrap; height: 2.25rem; }
+.merge-title-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.75rem;
+}
+.merge-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.82rem;
+    color: #374151;
+}
+.merge-panel {
+    margin-top: 0.8rem;
+    padding: 0.8rem;
+    border: 1px dashed #d1d5db;
+    border-radius: 8px;
+    background: #f9fafb;
+}
+.merge-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.5rem;
+}
+.merge-actions {
+    margin-top: 0.6rem;
+}
+.merge-error {
+    margin: 0.55rem 0 0;
+    font-size: 0.8rem;
+    color: #dc2626;
+}
+.merge-preview {
+    margin-top: 0.6rem;
+    padding-top: 0.6rem;
+    border-top: 1px solid #e5e7eb;
+}
+.merge-preview-row {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.84rem;
+    color: #4b5563;
+    margin-bottom: 0.35rem;
+}
+.merge-preview-total {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.92rem;
+    font-weight: 600;
+    color: #1f2937;
+}
 
 @media (max-width: 639px) {
     .form-grid { grid-template-columns: 1fr; }
@@ -285,5 +540,7 @@ textarea.input-field { resize: none; height: 6rem; }
     .coupon-row { flex-wrap: wrap; }
     .coupon-input { flex-basis: 100%; }
     .coupon-btn { flex: 1; min-width: 108px; }
+    .merge-grid { grid-template-columns: 1fr; }
+    .merge-title-row { align-items: flex-start; flex-direction: column; }
 }
 </style>

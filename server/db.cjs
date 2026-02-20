@@ -49,6 +49,7 @@ db.serialize(() => {
         originalTotal REAL DEFAULT 0,
         discountAmount REAL DEFAULT 0,
         couponCode TEXT,
+        mergeMeta TEXT,
         items TEXT,         -- JSON: 商品列表
         contactName TEXT,   -- 联系人
         contactPhone TEXT,  -- 电话
@@ -148,6 +149,7 @@ db.serialize(() => {
     ensureColumn('orders', 'originalTotal', 'REAL DEFAULT 0');
     ensureColumn('orders', 'discountAmount', 'REAL DEFAULT 0');
     ensureColumn('orders', 'couponCode', 'TEXT');
+    ensureColumn('orders', 'mergeMeta', 'TEXT');
     ensureColumn('contact_messages', 'handled_at', 'DATETIME');
 });
 

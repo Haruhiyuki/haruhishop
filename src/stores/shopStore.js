@@ -655,8 +655,9 @@ export const useShopStore = () => {
             const res = await fetch(ORDER_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(orderData) })
             const data = await res.json()
             if (!res.ok) throw new Error(data.error || '创建订单失败')
+            const finalOrderId = data.orderId || orderData.id
             trackEvent('order_submitted', {
-                orderId: orderData.id,
+                orderId: finalOrderId,
                 total: data.total || orderData.total,
                 itemCount: (orderData.items || []).length
             })

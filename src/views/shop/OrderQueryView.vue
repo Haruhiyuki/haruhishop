@@ -28,6 +28,39 @@
                 <span class="result-order-id">订单: {{ order.id }}</span>
                 <span :style="statusStyle">{{ statusText }}</span>
             </div>
+            <div v-if="order.mergeMeta" class="merge-meta-card">
+                <div class="merge-meta-title">合并订单信息</div>
+                <div class="merge-meta-row">
+                    <span>合并次数</span>
+                    <span>{{ mergeCount }}</span>
+                </div>
+                <div class="merge-meta-subtitle">构成订单（旧单号 / 原金额）</div>
+                <div v-for="part in mergeParts" :key="part.orderId" class="merge-meta-row">
+                    <span>{{ part.orderId }}</span>
+                    <span>¥{{ part.amount }}</span>
+                </div>
+                <div v-if="latestMergeHistory" class="merge-meta-subtitle">最近一次合并</div>
+                <div v-if="latestMergeHistory" class="merge-meta-row">
+                    <span>旧单号</span>
+                    <span>{{ latestMergeHistory.sourceOrderId }}</span>
+                </div>
+                <div v-if="latestMergeHistory" class="merge-meta-row">
+                    <span>新加订单号</span>
+                    <span>{{ latestMergeHistory.appendedOrderId }}</span>
+                </div>
+                <div v-if="latestMergeHistory" class="merge-meta-row">
+                    <span>本次合并金额</span>
+                    <span>¥{{ latestMergeHistory.sourceAmount }} + ¥{{ latestMergeHistory.appendedAmount }}</span>
+                </div>
+                <div class="merge-meta-row merge-meta-total">
+                    <span>合并后总金额</span>
+                    <span>¥{{ order.mergeMeta.mergedAmount || order.total }}</span>
+                </div>
+                <div v-if="Number(order.mergeMeta.shippingSaved) > 0" class="merge-meta-row">
+                    <span>运费返还</span>
+                    <span style="color: #16a34a;">-¥{{ order.mergeMeta.shippingSaved }}</span>
+                </div>
+            </div>
             <div class="result-body">
                 <div style="width: 100%; text-align: left;">
                     <!-- 收件信息 -->
@@ -165,6 +198,24 @@ const statusStyle = computed(() => {
     const s = order.value ? statusMap[order.value.status] : null
     return s ? { fontSize: '0.75rem', background: s.bg, color: s.color, padding: '2px 8px', borderRadius: '4px' } : {}
 })
+const mergeParts = computed(() => {
+    const parts = order.value?.mergeMeta?.parts
+    return Array.isArray(parts) ? parts : []
+})
+const latestMergeHistory = computed(() => {
+    const history = order.value?.mergeMeta?.history
+    if (!Array.isArray(history) || history.length === 0) return null
+    return history[history.length - 1]
+})
+const mergeCount = computed(() => {
+    const count = Number(order.value?.mergeMeta?.mergeCount)
+    if (Number.isInteger(count) && count > 0) return count
+    const history = order.value?.mergeMeta?.history
+    if (Array.isArray(history) && history.length > 0) return history.length
+    const parts = order.value?.mergeMeta?.parts
+    if (Array.isArray(parts) && parts.length > 1) return parts.length - 1
+    return 1
+})
 const canEditContact = computed(() => {
     const status = Number(order.value?.status)
     return [1, 2, 5].includes(status)
@@ -296,6 +347,44 @@ const query = async () => {
 .result-order-id {
     font-weight: bold;
     color: #374151;
+}
+
+.merge-meta-card {
+    margin-bottom: 0.75rem;
+    padding: 0.75rem;
+    border-radius: 8px;
+    background: #eff6ff;
+    border: 1px solid #bfdbfe;
+}
+
+.merge-meta-title {
+    font-size: 0.82rem;
+    color: #1d4ed8;
+    font-weight: 600;
+    margin-bottom: 0.4rem;
+}
+
+.merge-meta-subtitle {
+    margin: 0.5rem 0 0.35rem;
+    font-size: 0.76rem;
+    color: #1d4ed8;
+    font-weight: 600;
+}
+
+.merge-meta-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 0.75rem;
+    font-size: 0.82rem;
+    color: #1f2937;
+    margin-bottom: 0.3rem;
+}
+
+.merge-meta-total {
+    padding-top: 0.25rem;
+    margin-top: 0.25rem;
+    border-top: 1px dashed #bfdbfe;
+    font-weight: 600;
 }
 
 .query-item-row {
