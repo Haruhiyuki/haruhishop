@@ -12,8 +12,19 @@
                 <span class="order-sn">{{ order.id }}</span>
                 <button @click="copy(order.id)" style="font-size: 0.75rem; background: #dbeafe; color: #2563eb; border: none; padding: 2px 6px; border-radius: 4px; cursor: pointer;">复制</button>
             </div>
-            <label style="font-size: 0.75rem; color: #666; text-transform: uppercase; margin-bottom: 0.25rem;">应付金额</label>
-            <div class="payment-amount">¥{{ order.total }}</div>
+            <label style="font-size: 0.75rem; color: #666; text-transform: uppercase; margin-bottom: 0.25rem;">
+                {{ isMergedOrder ? '本次追加应付' : '应付金额' }}
+            </label>
+            <div class="payment-amount">¥{{ displayPayableAmount }}</div>
+            <div v-if="isMergedOrder" style="font-size: 0.75rem; color: #6b7280; margin-bottom: 0.4rem;">
+                旧订单金额 ¥{{ mergeSourceAmount }}，合并总金额 ¥{{ mergeMergedAmount }}
+            </div>
+            <div v-if="isMergedOrder && mergeShippingAdjustment < 0" style="font-size: 0.75rem; color: #16a34a; margin-bottom: 0.4rem;">
+                已抵扣运费 -¥{{ mergeShippingRefund }}
+            </div>
+            <div v-else-if="isMergedOrder && mergeShippingAdjustment > 0" style="font-size: 0.75rem; color: #dc2626; margin-bottom: 0.4rem;">
+                追加运费 +¥{{ mergeShippingExtra }}
+            </div>
             <div v-if="Number(order.discountAmount) > 0" style="font-size: 0.75rem; color: #6b7280; margin-bottom: 0.5rem;">
                 原价 ¥{{ order.originalTotal }}，优惠 -¥{{ order.discountAmount }}
             </div>
@@ -119,6 +130,29 @@ import { trackEvent } from '@/utils/analytics'
 const store = useShopStore()
 const router = useRouter()
 const order = computed(() => store.state.currentOrder)
+const roundMoney = (value) => Number((Number(value) || 0).toFixed(2))
+const mergeMeta = computed(() => order.value?.mergeMeta || null)
+const isMergedOrder = computed(() => Boolean(mergeMeta.value))
+const mergeSourceAmount = computed(() => roundMoney(mergeMeta.value?.sourceAmount))
+const mergeAppendedAmount = computed(() => roundMoney(mergeMeta.value?.appendedAmount))
+const mergeMergedAmount = computed(() => roundMoney(mergeMeta.value?.mergedAmount || order.value?.total))
+const mergeShippingAdjustment = computed(() => {
+    const raw = Number(mergeMeta.value?.shippingAdjustment)
+    if (Number.isFinite(raw)) return roundMoney(raw)
+
+    const sourceShippingFee = Number(mergeMeta.value?.sourceShippingFee) || 0
+    const appendedShippingFee = Number(mergeMeta.value?.appendedShippingFee) || 0
+    const mergedShippingFee = Number(mergeMeta.value?.mergedShippingFee) || 0
+    return roundMoney(mergedShippingFee - sourceShippingFee - appendedShippingFee)
+})
+const mergeShippingRefund = computed(() => roundMoney(Math.max(0, -mergeShippingAdjustment.value)))
+const mergeShippingExtra = computed(() => roundMoney(Math.max(0, mergeShippingAdjustment.value)))
+const displayPayableAmount = computed(() => {
+    if (!isMergedOrder.value) return roundMoney(order.value?.total)
+    const fromMeta = Number(mergeMeta.value?.incrementalPayable)
+    if (Number.isFinite(fromMeta)) return roundMoney(fromMeta)
+    return roundMoney(Math.max(0, mergeAppendedAmount.value + mergeShippingAdjustment.value))
+})
 const PAYMENT_NOTE_TEXT = '支付时请备注订单号后四位。'
 const FRIEND_TRANSFER_HELP_TEXT = '保存二维码添加好友并转账。'
 

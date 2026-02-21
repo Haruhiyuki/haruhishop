@@ -193,6 +193,9 @@ const normalizeOrderMergeMeta = (rawValue) => {
     const parsed = typeof rawValue === 'string' ? safeParse(rawValue, null) : rawValue;
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
 
+    const computeShippingAdjustment = (sourceShippingFee, appendedShippingFee, mergedShippingFee) =>
+        toMoney(toMoney(mergedShippingFee) - toMoney(sourceShippingFee) - toMoney(appendedShippingFee));
+
     const normalizedParts = Array.isArray(parsed.parts)
         ? dedupeParts(parsed.parts)
         : [];
@@ -224,17 +227,30 @@ const normalizeOrderMergeMeta = (rawValue) => {
             const appendedOrderId = cleanId(row?.appendedOrderId || row?.submittedOrderId);
             const newOrderId = cleanId(row?.newOrderId || row?.mergedOrderId);
             if (!sourceOrderId || !appendedOrderId || !newOrderId) continue;
+            const sourceShippingFee = toMoney(row?.sourceShippingFee);
+            const appendedShippingFee = toMoney(row?.appendedShippingFee);
+            const mergedShippingFee = toMoney(row?.mergedShippingFee);
+            const shippingAdjustment = row?.shippingAdjustment !== undefined
+                ? toMoney(row.shippingAdjustment)
+                : computeShippingAdjustment(sourceShippingFee, appendedShippingFee, mergedShippingFee);
+            const appendedAmount = toMoney(row?.appendedAmount);
             normalizedHistory.push({
                 sourceOrderId,
                 appendedOrderId,
                 newOrderId,
                 sourceAmount: toMoney(row?.sourceAmount),
-                appendedAmount: toMoney(row?.appendedAmount),
+                appendedAmount,
                 mergedAmount: toMoney(row?.mergedAmount),
-                sourceShippingFee: toMoney(row?.sourceShippingFee),
-                appendedShippingFee: toMoney(row?.appendedShippingFee),
-                mergedShippingFee: toMoney(row?.mergedShippingFee),
-                shippingSaved: toMoney(row?.shippingSaved),
+                sourceShippingFee,
+                appendedShippingFee,
+                mergedShippingFee,
+                shippingAdjustment,
+                incrementalPayable: toMoney(
+                    row?.incrementalPayable !== undefined ? row.incrementalPayable : Math.max(0, appendedAmount + shippingAdjustment)
+                ),
+                shippingSaved: toMoney(
+                    row?.shippingSaved !== undefined ? row.shippingSaved : Math.max(0, -shippingAdjustment)
+                ),
                 mergedAt: row?.mergedAt ? String(row.mergedAt) : null
             });
         }
@@ -245,17 +261,26 @@ const normalizeOrderMergeMeta = (rawValue) => {
         const appendedOrderId = cleanId(parsed.submittedOrderId);
         const newOrderId = cleanId(parsed.mergedOrderId);
         if (sourceOrderId && appendedOrderId && newOrderId) {
+            const sourceShippingFee = toMoney(parsed.sourceShippingFee);
+            const appendedShippingFee = toMoney(parsed.appendedShippingFee);
+            const mergedShippingFee = toMoney(parsed.mergedShippingFee);
+            const shippingAdjustment = computeShippingAdjustment(sourceShippingFee, appendedShippingFee, mergedShippingFee);
+            const appendedAmount = toMoney(parsed.appendedAmount);
             normalizedHistory.push({
                 sourceOrderId,
                 appendedOrderId,
                 newOrderId,
                 sourceAmount: toMoney(parsed.sourceAmount),
-                appendedAmount: toMoney(parsed.appendedAmount),
+                appendedAmount,
                 mergedAmount: toMoney(parsed.mergedAmount),
-                sourceShippingFee: toMoney(parsed.sourceShippingFee),
-                appendedShippingFee: toMoney(parsed.appendedShippingFee),
-                mergedShippingFee: toMoney(parsed.mergedShippingFee),
-                shippingSaved: toMoney(parsed.shippingSaved),
+                sourceShippingFee,
+                appendedShippingFee,
+                mergedShippingFee,
+                shippingAdjustment,
+                incrementalPayable: toMoney(Math.max(0, appendedAmount + shippingAdjustment)),
+                shippingSaved: toMoney(
+                    parsed.shippingSaved !== undefined ? parsed.shippingSaved : Math.max(0, -shippingAdjustment)
+                ),
                 mergedAt: parsed.mergedAt ? String(parsed.mergedAt) : null
             });
         }
@@ -265,6 +290,22 @@ const normalizeOrderMergeMeta = (rawValue) => {
     const mergedOrderId = cleanId(parsed.mergedOrderId || latestHistory?.newOrderId);
     const sourceOrderId = cleanId(parsed.sourceOrderId || latestHistory?.sourceOrderId);
     const submittedOrderId = cleanId(parsed.submittedOrderId || latestHistory?.appendedOrderId);
+    const sourceShippingFee = toMoney(parsed.sourceShippingFee ?? latestHistory?.sourceShippingFee);
+    const appendedShippingFee = toMoney(parsed.appendedShippingFee ?? latestHistory?.appendedShippingFee);
+    const mergedShippingFee = toMoney(parsed.mergedShippingFee ?? latestHistory?.mergedShippingFee);
+    const shippingAdjustment = parsed.shippingAdjustment !== undefined
+        ? toMoney(parsed.shippingAdjustment)
+        : computeShippingAdjustment(sourceShippingFee, appendedShippingFee, mergedShippingFee);
+    const sourceAmount = toMoney(parsed.sourceAmount ?? latestHistory?.sourceAmount);
+    const appendedAmount = toMoney(parsed.appendedAmount ?? latestHistory?.appendedAmount);
+    const mergedAmount = toMoney(parsed.mergedAmount ?? latestHistory?.mergedAmount);
+    const incrementalPayable = toMoney(
+        parsed.incrementalPayable !== undefined
+            ? parsed.incrementalPayable
+            : (latestHistory?.incrementalPayable !== undefined
+                ? latestHistory.incrementalPayable
+                : Math.max(0, appendedAmount + shippingAdjustment))
+    );
 
     if (!mergedOrderId && normalizedParts.length === 0 && !sourceOrderId && !submittedOrderId) {
         return null;
@@ -274,13 +315,21 @@ const normalizeOrderMergeMeta = (rawValue) => {
         mergedOrderId: mergedOrderId || null,
         sourceOrderId: sourceOrderId || null,
         submittedOrderId: submittedOrderId || null,
-        sourceAmount: toMoney(parsed.sourceAmount ?? latestHistory?.sourceAmount),
-        appendedAmount: toMoney(parsed.appendedAmount ?? latestHistory?.appendedAmount),
-        mergedAmount: toMoney(parsed.mergedAmount ?? latestHistory?.mergedAmount),
-        sourceShippingFee: toMoney(parsed.sourceShippingFee ?? latestHistory?.sourceShippingFee),
-        appendedShippingFee: toMoney(parsed.appendedShippingFee ?? latestHistory?.appendedShippingFee),
-        mergedShippingFee: toMoney(parsed.mergedShippingFee ?? latestHistory?.mergedShippingFee),
-        shippingSaved: toMoney(parsed.shippingSaved ?? latestHistory?.shippingSaved),
+        sourceAmount,
+        appendedAmount,
+        mergedAmount,
+        sourceShippingFee,
+        appendedShippingFee,
+        mergedShippingFee,
+        shippingAdjustment,
+        incrementalPayable,
+        shippingSaved: toMoney(
+            parsed.shippingSaved !== undefined
+                ? parsed.shippingSaved
+                : (latestHistory?.shippingSaved !== undefined ? latestHistory.shippingSaved : Math.max(0, -shippingAdjustment))
+        ),
+        contactPolicy: parsed.contactPolicy ? String(parsed.contactPolicy) : 'new_order',
+        contactChanged: Boolean(parsed.contactChanged),
         mergedAt: parsed.mergedAt ? String(parsed.mergedAt) : (latestHistory?.mergedAt || null),
         mergeCount: Math.max(
             Number.isInteger(Number(parsed.mergeCount)) ? Number(parsed.mergeCount) : 0,
@@ -1684,9 +1733,10 @@ app.post(apiPath('/orders'), async (req, res) => {
             const sourceAmount = roundMoney(Number(sourceOrder.total) || 0);
             const mergedItems = mergePricedItems(sourceItems, pricing.pricedItems);
             const mergedPricing = calculatePricingFromPricedItems(mergedItems);
-            const shippingSaved = roundMoney(
-                Math.max(0, sourcePricing.shippingFee + pricing.shippingFee - mergedPricing.shippingFee)
+            const shippingAdjustment = roundMoney(
+                mergedPricing.shippingFee - sourcePricing.shippingFee - pricing.shippingFee
             );
+            const shippingSaved = roundMoney(Math.max(0, -shippingAdjustment));
             const mergeTime = new Date().toISOString();
 
             finalOrderId = await generateUniqueOrderId();
@@ -1695,6 +1745,25 @@ app.post(apiPath('/orders'), async (req, res) => {
             finalDiscountAmount = roundMoney(sourceDiscountAmount + couponDiscountAmount);
             finalServerTotal = roundMoney(Math.max(0, finalOriginalTotal - finalDiscountAmount));
             finalCouponCode = sourceCouponCode || (appliedCoupon ? appliedCoupon.code : null) || null;
+            const sourceContact = {
+                name: String(sourceOrder.contactName || '').trim(),
+                phone: String(sourceOrder.contactPhone || '').trim(),
+                email: String(sourceOrder.contactEmail || '').trim(),
+                province: String(sourceOrder.province || '').trim(),
+                city: String(sourceOrder.city || '').trim(),
+                district: String(sourceOrder.district || '').trim(),
+                addressDetail: String(sourceOrder.addressDetail || '').trim()
+            };
+            const nextContact = {
+                name: normalizedContact.contactName,
+                phone: normalizedContact.contactPhone,
+                email: normalizedContact.contactEmail,
+                province: normalizedContact.contactProvince,
+                city: normalizedContact.contactCity,
+                district: normalizedContact.contactDistrict,
+                addressDetail: normalizedContact.contactAddressDetail
+            };
+            const contactChanged = JSON.stringify(sourceContact) !== JSON.stringify(nextContact);
 
             const sourceParts =
                 Array.isArray(sourceMergeMeta?.parts) && sourceMergeMeta.parts.length > 0
@@ -1747,6 +1816,30 @@ app.post(apiPath('/orders'), async (req, res) => {
                             sourceShippingFee: roundMoney(row?.sourceShippingFee),
                             appendedShippingFee: roundMoney(row?.appendedShippingFee),
                             mergedShippingFee: roundMoney(row?.mergedShippingFee),
+                            shippingAdjustment: row?.shippingAdjustment !== undefined
+                                ? roundMoney(row.shippingAdjustment)
+                                : roundMoney(
+                                    (Number(row?.mergedShippingFee) || 0)
+                                    - (Number(row?.sourceShippingFee) || 0)
+                                    - (Number(row?.appendedShippingFee) || 0)
+                                ),
+                            incrementalPayable: row?.incrementalPayable !== undefined
+                                ? roundMoney(row.incrementalPayable)
+                                : roundMoney(
+                                    Math.max(
+                                        0,
+                                        (Number(row?.appendedAmount) || 0)
+                                        + (
+                                            row?.shippingAdjustment !== undefined
+                                                ? Number(row.shippingAdjustment)
+                                                : (
+                                                    (Number(row?.mergedShippingFee) || 0)
+                                                    - (Number(row?.sourceShippingFee) || 0)
+                                                    - (Number(row?.appendedShippingFee) || 0)
+                                                )
+                                        )
+                                    )
+                                ),
                             shippingSaved: roundMoney(row?.shippingSaved),
                             mergedAt: row?.mergedAt ? String(row.mergedAt) : null
                         }))
@@ -1762,6 +1855,8 @@ app.post(apiPath('/orders'), async (req, res) => {
                 sourceShippingFee: sourcePricing.shippingFee,
                 appendedShippingFee: pricing.shippingFee,
                 mergedShippingFee: mergedPricing.shippingFee,
+                shippingAdjustment,
+                incrementalPayable: roundMoney(Math.max(0, currentOrderServerTotal + shippingAdjustment)),
                 shippingSaved,
                 mergedAt: mergeTime
             };
@@ -1777,7 +1872,11 @@ app.post(apiPath('/orders'), async (req, res) => {
                 sourceShippingFee: sourcePricing.shippingFee,
                 appendedShippingFee: pricing.shippingFee,
                 mergedShippingFee: mergedPricing.shippingFee,
+                shippingAdjustment,
+                incrementalPayable: roundMoney(Math.max(0, currentOrderServerTotal + shippingAdjustment)),
                 shippingSaved,
+                contactPolicy: 'new_order',
+                contactChanged,
                 mergedAt: mergeTime,
                 mergeCount: mergedHistory.length,
                 parts: [...partsByOrderId.values()],

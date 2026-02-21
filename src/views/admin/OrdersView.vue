@@ -71,18 +71,33 @@
               <div class="text-sub">{{ new Date(order.created_at).toLocaleString() }}</div>
               <div v-if="order.mergeMeta" class="merge-order-brief">
                 <div><strong>合并单（第 {{ getMergeCount(order.mergeMeta) }} 次）</strong></div>
+                <div class="merge-kv-row">
+                  <span>构成订单</span>
+                  <span>{{ (order.mergeMeta.parts || []).length }} 笔</span>
+                </div>
                 <div v-for="part in getMergeParts(order.mergeMeta)" :key="part.orderId">
                   {{ part.orderId }}: ¥{{ part.amount }}
                 </div>
                 <div v-if="(order.mergeMeta.parts || []).length > 4">...</div>
-                <div v-if="getLatestMergeHistory(order.mergeMeta)">
-                  最近: {{ getLatestMergeHistory(order.mergeMeta).sourceOrderId }} + {{ getLatestMergeHistory(order.mergeMeta).appendedOrderId }} -> {{ getLatestMergeHistory(order.mergeMeta).newOrderId }}
+                <div class="merge-kv-row">
+                  <span>先前订单</span>
+                  <span>¥{{ getMergeSourceAmount(order.mergeMeta, order.total) }}</span>
                 </div>
-                <div v-if="getLatestMergeHistory(order.mergeMeta)">
-                  本次: ¥{{ getLatestMergeHistory(order.mergeMeta).sourceAmount }} + ¥{{ getLatestMergeHistory(order.mergeMeta).appendedAmount }} = ¥{{ getLatestMergeHistory(order.mergeMeta).mergedAmount || order.total }}
+                <div class="merge-kv-row">
+                  <span>本次应付</span>
+                  <span>¥{{ getMergeIncrementalPayable(order.mergeMeta, order.total) }}</span>
                 </div>
-                <div v-if="Number(order.mergeMeta.shippingSaved) > 0" style="color: #16a34a;">
-                  运费返还: -¥{{ order.mergeMeta.shippingSaved }}
+                <div class="merge-kv-row">
+                  <span>订单总金额</span>
+                  <span>¥{{ getMergeTotalAmount(order.mergeMeta, order.total) }}</span>
+                </div>
+                <div class="merge-kv-row">
+                  <span>邮费减免</span>
+                  <span style="color: #16a34a;">-¥{{ getMergeShippingDiscount(order.mergeMeta) }}</span>
+                </div>
+                <div v-if="getMergeShippingExtra(order.mergeMeta) > 0" class="merge-kv-row">
+                  <span>邮费补差</span>
+                  <span style="color: #dc2626;">+¥{{ getMergeShippingExtra(order.mergeMeta) }}</span>
                 </div>
               </div>
             </td>
@@ -284,16 +299,51 @@ const getMergeParts = (mergeMeta = null) => {
   const parts = Array.isArray(mergeMeta?.parts) ? mergeMeta.parts : []
   return parts.slice(0, 4)
 }
-const getLatestMergeHistory = (mergeMeta = null) => {
-  const history = Array.isArray(mergeMeta?.history) ? mergeMeta.history : []
-  if (history.length === 0) return null
-  return history[history.length - 1]
-}
 const getMergeCount = (mergeMeta = null) => {
   const parsed = Number(mergeMeta?.mergeCount)
   if (Number.isInteger(parsed) && parsed > 0) return parsed
   const history = Array.isArray(mergeMeta?.history) ? mergeMeta.history : []
   return history.length || 1
+}
+const toMoney = (value) => Number((Number(value) || 0).toFixed(2))
+const getMergeShippingAdjustment = (mergeMeta = null) => {
+  const parsed = Number(mergeMeta?.shippingAdjustment)
+  if (Number.isFinite(parsed)) return toMoney(parsed)
+  const source = Number(mergeMeta?.sourceShippingFee) || 0
+  const appended = Number(mergeMeta?.appendedShippingFee) || 0
+  const merged = Number(mergeMeta?.mergedShippingFee) || 0
+  return toMoney(merged - source - appended)
+}
+const getMergeShippingDiscount = (mergeMeta = null) =>
+  toMoney(Math.max(0, -getMergeShippingAdjustment(mergeMeta)))
+const getMergeShippingExtra = (mergeMeta = null) =>
+  toMoney(Math.max(0, getMergeShippingAdjustment(mergeMeta)))
+const getMergeIncrementalPayable = (mergeMeta = null, orderTotal = 0) => {
+  const parsed = Number(mergeMeta?.incrementalPayable)
+  if (Number.isFinite(parsed)) return toMoney(parsed)
+  const appendedAmount = Number(mergeMeta?.appendedAmount)
+  if (Number.isFinite(appendedAmount)) {
+    return toMoney(Math.max(0, appendedAmount + getMergeShippingAdjustment(mergeMeta)))
+  }
+  const total = getMergeTotalAmount(mergeMeta, orderTotal)
+  const source = getMergeSourceAmount(mergeMeta, orderTotal)
+  return toMoney(Math.max(0, total - source))
+}
+const getMergeTotalAmount = (mergeMeta = null, orderTotal = 0) => {
+  const parsed = Number(mergeMeta?.mergedAmount)
+  if (Number.isFinite(parsed)) return toMoney(parsed)
+  return toMoney(orderTotal)
+}
+const getMergeSourceAmount = (mergeMeta = null, orderTotal = 0) => {
+  const parsed = Number(mergeMeta?.sourceAmount)
+  if (Number.isFinite(parsed)) return toMoney(parsed)
+  const appendedAmount = Number(mergeMeta?.appendedAmount)
+  if (Number.isFinite(appendedAmount)) {
+    const total = getMergeTotalAmount(mergeMeta, orderTotal)
+    const incremental = toMoney(Math.max(0, appendedAmount + getMergeShippingAdjustment(mergeMeta)))
+    return toMoney(Math.max(0, total - incremental))
+  }
+  return toMoney(orderTotal)
 }
 
 const updateStatus = async (id, status) => {
@@ -538,6 +588,12 @@ button:disabled {
   color: #1e3a8a;
   font-size: 0.73rem;
   line-height: 1.45;
+}
+
+.merge-kv-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
 }
 
 .contact-edit-grid {

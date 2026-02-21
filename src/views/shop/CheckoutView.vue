@@ -63,6 +63,9 @@
             <p style="margin: 0.5rem 0 0; font-size: 0.8rem; color: #6b7280;">
                 支持合并所有未发货订单（待付款/待确认/待发货），需要校验完整订单号与手机号后四位。
             </p>
+            <p style="margin: 0.4rem 0 0; font-size: 0.78rem; color: #9ca3af;">
+                若旧订单与本次填写的收货信息不一致，合并后将以本次填写的收货信息为准。
+            </p>
 
             <div v-if="mergeForm.enabled" class="merge-panel">
                 <div class="merge-grid">
@@ -100,13 +103,17 @@
                         <span>本次下单金额</span>
                         <span>¥{{ payableTotal }}</span>
                     </div>
-                    <div class="merge-preview-row" v-if="shippingRefundEstimate > 0">
+                    <div class="merge-preview-row" v-if="shippingAdjustmentEstimate < 0">
                         <span>合并运费返还</span>
                         <span style="color: #16a34a;">-¥{{ shippingRefundEstimate }}</span>
                     </div>
+                    <div class="merge-preview-row" v-else-if="shippingAdjustmentEstimate > 0">
+                        <span>合并追加运费</span>
+                        <span style="color: #dc2626;">+¥{{ shippingExtraEstimate }}</span>
+                    </div>
                     <div class="merge-preview-total">
-                        <span>合并后应付</span>
-                        <span>¥{{ mergedPayableEstimate }}</span>
+                        <span>本次追加应付</span>
+                        <span>¥{{ incrementalPayableEstimate }}</span>
                     </div>
                 </div>
             </div>
@@ -165,13 +172,21 @@
                 <span style="color: #666;">旧订单金额</span>
                 <span>¥{{ mergePreview.total }}</span>
             </div>
-            <div v-if="mergeForm.enabled && mergePreview && shippingRefundEstimate > 0" class="summary-row">
+            <div v-if="mergeForm.enabled && mergePreview" class="summary-row">
+                <span style="color: #666;">合并后总金额</span>
+                <span>¥{{ mergedTotalEstimate }}</span>
+            </div>
+            <div v-if="mergeForm.enabled && mergePreview && shippingAdjustmentEstimate < 0" class="summary-row">
                 <span style="color: #666;">合并运费返还</span>
                 <span style="color: #16a34a;">-¥{{ shippingRefundEstimate }}</span>
             </div>
+            <div v-if="mergeForm.enabled && mergePreview && shippingAdjustmentEstimate > 0" class="summary-row">
+                <span style="color: #666;">合并追加运费</span>
+                <span style="color: #dc2626;">+¥{{ shippingExtraEstimate }}</span>
+            </div>
             <div class="total-row">
-                <span style="font-weight: bold; color: #374151;">应付总额</span>
-                <span class="total-price">¥{{ finalPayableTotal }}</span>
+                <span style="font-weight: bold; color: #374151;">本次应付</span>
+                <span class="total-price">¥{{ displayPayableTotal }}</span>
             </div>
             <button @click="submitOrder" :disabled="isSubmitting || isApplyingCoupon || mergeValidating" class="market-btn primary-action" style="width: 100%; margin-top: 1.5rem; padding: 0.75rem;">
                 {{ isSubmitting ? '提交中...' : '提交订单' }}
@@ -248,15 +263,29 @@ const mergedShippingFeeEstimate = computed(() => {
     const mergedProductsTotal = roundMoney(oldOrderProductsTotal.value + cartTotal.value)
     return calculateShippingByItems(mergedItems, mergedProductsTotal)
 })
-const shippingRefundEstimate = computed(() => {
+const shippingAdjustmentEstimate = computed(() => {
     if (!mergeForm.enabled || !mergePreview.value) return 0
-    return roundMoney(Math.max(0, oldOrderShippingFee.value + shippingFee.value - mergedShippingFeeEstimate.value))
+    return roundMoney(mergedShippingFeeEstimate.value - oldOrderShippingFee.value - shippingFee.value)
 })
-const mergedPayableEstimate = computed(() => {
+const shippingRefundEstimate = computed(() => {
+    return roundMoney(Math.max(0, -shippingAdjustmentEstimate.value))
+})
+const shippingExtraEstimate = computed(() => {
+    return roundMoney(Math.max(0, shippingAdjustmentEstimate.value))
+})
+const incrementalPayableRawEstimate = computed(() => {
     if (!mergeForm.enabled || !mergePreview.value) return payableTotal.value
-    return roundMoney(Math.max(0, Number(mergePreview.value.total || 0) + payableTotal.value - shippingRefundEstimate.value))
+    return roundMoney(payableTotal.value + shippingAdjustmentEstimate.value)
 })
-const finalPayableTotal = computed(() => (mergeForm.enabled && mergePreview.value ? mergedPayableEstimate.value : payableTotal.value))
+const incrementalPayableEstimate = computed(() => {
+    return roundMoney(Math.max(0, incrementalPayableRawEstimate.value))
+})
+const mergedTotalEstimate = computed(() => {
+    if (!mergeForm.enabled || !mergePreview.value) return payableTotal.value
+    return roundMoney(Math.max(0, Number(mergePreview.value.total || 0) + incrementalPayableRawEstimate.value))
+})
+const displayPayableTotal = computed(() => (mergeForm.enabled && mergePreview.value ? incrementalPayableEstimate.value : payableTotal.value))
+const orderTotalForSubmit = computed(() => (mergeForm.enabled && mergePreview.value ? mergedTotalEstimate.value : payableTotal.value))
 
 // 加载地址数据
 onMounted(async () => {
@@ -421,7 +450,7 @@ const submitOrder = async () => {
         id,
         items: cart.value,
         contact: form,
-        total: finalPayableTotal.value,
+        total: orderTotalForSubmit.value,
         couponCode: appliedCoupon.value?.code || '',
         mergeTarget: mergeForm.enabled ? {
             orderId: mergeForm.orderId.trim(),
@@ -438,11 +467,12 @@ const submitOrder = async () => {
         store.setOrder({
             ...orderData,
             id: finalOrderId,
-            total: createdOrder.total ?? finalPayableTotal.value,
+            total: createdOrder.total ?? orderTotalForSubmit.value,
             originalTotal: createdOrder.originalTotal ?? orderOriginalTotal.value,
             discountAmount: createdOrder.discountAmount ?? discountAmount.value,
             couponCode: createdOrder.couponCode || appliedCoupon.value?.code || null,
-            mergeMeta: createdOrder.mergeMeta || null
+            mergeMeta: createdOrder.mergeMeta || null,
+            payableNow: mergeForm.enabled && mergePreview.value ? incrementalPayableEstimate.value : (createdOrder.total ?? payableTotal.value)
         })
         store.clearCart()
         router.push('/payment')

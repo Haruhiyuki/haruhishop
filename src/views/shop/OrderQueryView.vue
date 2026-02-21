@@ -17,6 +17,9 @@
         <p style="margin: 0 0 1.5rem 0; color: #9ca3af; font-size: 0.8rem;">
             为保护隐私，查询需同时验证下单手机号后四位
         </p>
+        <p style="margin: 0 0 1.5rem 0; color: #9ca3af; font-size: 0.8rem;">
+            查询到订单后，也可进行收货信息的修改。
+        </p>
 
         <div v-if="error" style="background: #fef2f2; padding: 1.5rem; border-radius: var(--radius-md); text-align: center; color: #dc2626;">
             <i class="fa fa-exclamation-circle" style="font-size: 1.5rem; margin-bottom: 0.5rem;"></i>
@@ -56,9 +59,13 @@
                     <span>合并后总金额</span>
                     <span>¥{{ order.mergeMeta.mergedAmount || order.total }}</span>
                 </div>
-                <div v-if="Number(order.mergeMeta.shippingSaved) > 0" class="merge-meta-row">
+                <div v-if="mergeShippingAdjustment < 0" class="merge-meta-row">
                     <span>运费返还</span>
-                    <span style="color: #16a34a;">-¥{{ order.mergeMeta.shippingSaved }}</span>
+                    <span style="color: #16a34a;">-¥{{ mergeShippingRefund }}</span>
+                </div>
+                <div v-else-if="mergeShippingAdjustment > 0" class="merge-meta-row">
+                    <span>追加运费</span>
+                    <span style="color: #dc2626;">+¥{{ mergeShippingExtra }}</span>
                 </div>
             </div>
             <div class="result-body">
@@ -118,8 +125,16 @@
                         <span style="color: #6b7280;">&yen;{{ item.price * item.quantity }}</span>
                     </div>
                     <div class="query-total-row">
-                        <span>合计（含运费）</span>
-                        <span style="color: #dc2626;">&yen;{{ order.total }}</span>
+                        <span>{{ order.mergeMeta ? '本次追加应付' : '合计（含运费）' }}</span>
+                        <span style="color: #dc2626;">&yen;{{ order.mergeMeta ? mergePayableNow : order.total }}</span>
+                    </div>
+                    <div v-if="order.mergeMeta" class="query-subtotal-row">
+                        <span>旧订单金额</span>
+                        <span>&yen;{{ order.mergeMeta.sourceAmount }}</span>
+                    </div>
+                    <div v-if="order.mergeMeta" class="query-subtotal-row">
+                        <span>合并总金额</span>
+                        <span>&yen;{{ order.mergeMeta.mergedAmount || order.total }}</span>
                     </div>
 
                     <!-- 下单时间 -->
@@ -215,6 +230,23 @@ const mergeCount = computed(() => {
     const parts = order.value?.mergeMeta?.parts
     if (Array.isArray(parts) && parts.length > 1) return parts.length - 1
     return 1
+})
+const mergeShippingAdjustment = computed(() => {
+    const raw = Number(order.value?.mergeMeta?.shippingAdjustment)
+    if (Number.isFinite(raw)) return Number(raw.toFixed(2))
+
+    const source = Number(order.value?.mergeMeta?.sourceShippingFee) || 0
+    const appended = Number(order.value?.mergeMeta?.appendedShippingFee) || 0
+    const merged = Number(order.value?.mergeMeta?.mergedShippingFee) || 0
+    return Number((merged - source - appended).toFixed(2))
+})
+const mergeShippingRefund = computed(() => Number(Math.max(0, -mergeShippingAdjustment.value).toFixed(2)))
+const mergeShippingExtra = computed(() => Number(Math.max(0, mergeShippingAdjustment.value).toFixed(2)))
+const mergePayableNow = computed(() => {
+    const fromMeta = Number(order.value?.mergeMeta?.incrementalPayable)
+    if (Number.isFinite(fromMeta)) return Number(fromMeta.toFixed(2))
+    const appended = Number(order.value?.mergeMeta?.appendedAmount) || 0
+    return Number(Math.max(0, appended + mergeShippingAdjustment.value).toFixed(2))
 })
 const canEditContact = computed(() => {
     const status = Number(order.value?.status)
@@ -408,6 +440,14 @@ const query = async () => {
     justify-content: space-between;
     padding: 0.75rem 0;
     font-weight: bold;
+}
+
+.query-subtotal-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 0.15rem 0;
+    font-size: 0.78rem;
+    color: #6b7280;
 }
 
 .contact-header-row {

@@ -191,7 +191,7 @@ const titleTextByEvent = (eventKey) => {
 
 const descriptionTextByEvent = (eventKey) => {
     if (eventKey === 'order_created') return '我们已收到您的订单，请在24小时内完成支付。';
-    if (eventKey === 'order_confirmed') return '您的支付已确认，订单已进入待发货状态，我们将尽快安排发货。';
+    if (eventKey === 'order_confirmed') return '您的支付已确认，订单已进入待发货状态，我们将尽快安排发货。如需修改地址，可在“订单查询”页面操作。';
     if (eventKey === 'order_shipped') return '您的订单已发货，请留意物流动态。';
     if (eventKey === 'order_completed') return '订单已完成，感谢您的支持。';
     if (eventKey === 'order_cancelled') return '因未验证到正确的支付状态，订单已取消，如有疑问可联系管理员。';
