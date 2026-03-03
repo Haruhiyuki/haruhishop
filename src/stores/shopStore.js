@@ -73,37 +73,131 @@ const renameFileToWebp = (file) => {
     })
 }
 
-const convertImageFileToWebp = async (file) => {
+const clampNumber = (value, min, max, fallback) => {
+    const num = Number(value)
+    if (!Number.isFinite(num)) return fallback
+    return Math.min(max, Math.max(min, num))
+}
+
+const buildQualitySteps = (maxQuality, minQuality, qualityStep) => {
+    const start = clampNumber(maxQuality, 0.5, 1, 0.92)
+    const end = clampNumber(minQuality, 0.5, start, 0.65)
+    const step = clampNumber(qualityStep, 0.01, 0.2, 0.06)
+    const qualities = []
+
+    for (let quality = start; quality >= end; quality -= step) {
+        qualities.push(Number(quality.toFixed(2)))
+    }
+
+    const tail = Number(end.toFixed(2))
+    if (!qualities.includes(tail)) qualities.push(tail)
+    return qualities
+}
+
+const buildScaleSteps = (scaleSteps) => {
+    const base = Array.isArray(scaleSteps) && scaleSteps.length > 0
+        ? scaleSteps
+        : [1, 0.92, 0.84, 0.76, 0.68, 0.6]
+
+    const uniqueScales = []
+    base.forEach((value) => {
+        const scale = clampNumber(value, 0.4, 1, NaN)
+        if (!Number.isFinite(scale)) return
+        const normalized = Number(scale.toFixed(2))
+        if (!uniqueScales.includes(normalized)) uniqueScales.push(normalized)
+    })
+    if (!uniqueScales.includes(1)) uniqueScales.push(1)
+    return uniqueScales.sort((a, b) => b - a)
+}
+
+const loadImageFromObjectUrl = (objectUrl) => (
+    new Promise((resolve, reject) => {
+        const img = new Image()
+        img.onload = () => resolve(img)
+        img.onerror = () => reject(new Error('图片解码失败'))
+        img.src = objectUrl
+    })
+)
+
+const createCanvasFromImage = (image, { maxDimension, scale }) => {
+    const rawWidth = Number(image.naturalWidth || image.width || 0)
+    const rawHeight = Number(image.naturalHeight || image.height || 0)
+    if (!rawWidth || !rawHeight) return null
+
+    let width = rawWidth
+    let height = rawHeight
+    const longestEdge = Math.max(width, height)
+    const limitedMaxDimension = clampNumber(maxDimension, 200, 6000, 2200)
+    if (longestEdge > limitedMaxDimension) {
+        const ratio = limitedMaxDimension / longestEdge
+        width = Math.max(1, Math.round(width * ratio))
+        height = Math.max(1, Math.round(height * ratio))
+    }
+
+    if (scale < 1) {
+        width = Math.max(1, Math.round(width * scale))
+        height = Math.max(1, Math.round(height * scale))
+    }
+
+    const canvas = document.createElement('canvas')
+    canvas.width = width
+    canvas.height = height
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return null
+    ctx.imageSmoothingEnabled = true
+    ctx.imageSmoothingQuality = 'high'
+    ctx.drawImage(image, 0, 0, width, height)
+    return canvas
+}
+
+const encodeCanvasToWebp = (canvas, quality) => (
+    new Promise((resolve) => {
+        canvas.toBlob((value) => resolve(value), 'image/webp', quality)
+    })
+)
+
+const convertImageFileToWebp = async (file, options = {}) => {
     if (!(file instanceof File)) return null
     if (!String(file.type || '').startsWith('image/')) return null
     if (String(file.type) === 'image/webp') return renameFileToWebp(file)
 
+    const targetSizeRatio = clampNumber(options?.targetSizeRatio, 0.4, 1, 0.95)
+    const targetMaxBytes = clampNumber(
+        options?.targetMaxBytes,
+        1024,
+        20 * 1024 * 1024,
+        Math.max(1024, Math.round((Number(file.size) || 0) * targetSizeRatio))
+    )
+    const qualitySteps = buildQualitySteps(options?.maxQuality, options?.minQuality, options?.qualityStep)
+    const scaleSteps = buildScaleSteps(options?.scaleSteps)
+
     const objectUrl = URL.createObjectURL(file)
     try {
-        const image = await new Promise((resolve, reject) => {
-            const img = new Image()
-            img.onload = () => resolve(img)
-            img.onerror = () => reject(new Error('图片解码失败'))
-            img.src = objectUrl
-        })
+        const image = await loadImageFromObjectUrl(objectUrl)
+        let smallestBlob = null
 
-        const width = Number(image.naturalWidth || image.width || 0)
-        const height = Number(image.naturalHeight || image.height || 0)
-        if (!width || !height) throw new Error('无效图片尺寸')
+        for (const scale of scaleSteps) {
+            const canvas = createCanvasFromImage(image, {
+                maxDimension: options?.maxDimension,
+                scale
+            })
+            if (!canvas) continue
 
-        const canvas = document.createElement('canvas')
-        canvas.width = width
-        canvas.height = height
-        const ctx = canvas.getContext('2d')
-        if (!ctx) throw new Error('画布初始化失败')
-        ctx.drawImage(image, 0, 0, width, height)
+            for (const quality of qualitySteps) {
+                const blob = await encodeCanvasToWebp(canvas, quality)
+                if (!blob) continue
+                if (!smallestBlob || blob.size < smallestBlob.size) smallestBlob = blob
+                if (blob.size <= targetMaxBytes) {
+                    return new File([blob], `${getFileBaseName(file.name)}.webp`, {
+                        type: 'image/webp',
+                        lastModified: Date.now()
+                    })
+                }
+            }
+        }
 
-        const blob = await new Promise((resolve) => {
-            canvas.toBlob((value) => resolve(value), 'image/webp', 0.9)
-        })
-        if (!blob) throw new Error('WebP 编码失败')
-
-        return new File([blob], `${getFileBaseName(file.name)}.webp`, {
+        if (!smallestBlob) throw new Error('WebP 编码失败')
+        return new File([smallestBlob], `${getFileBaseName(file.name)}.webp`, {
             type: 'image/webp',
             lastModified: Date.now()
         })
@@ -530,10 +624,19 @@ export const useShopStore = () => {
         if (!ensureAdminAuth()) return null
         const purpose = options?.purpose === 'qr' ? 'qr' : 'general'
         const shouldConvertToWebp = options?.convertToWebp ?? purpose !== 'qr'
+        const compressionOptions = {
+            maxDimension: options?.maxDimension,
+            targetSizeRatio: options?.targetSizeRatio,
+            targetMaxBytes: options?.targetMaxBytes,
+            maxQuality: options?.maxQuality,
+            minQuality: options?.minQuality,
+            qualityStep: options?.qualityStep,
+            scaleSteps: options?.scaleSteps
+        }
 
         let uploadFile = file
         if (shouldConvertToWebp) {
-            uploadFile = await convertImageFileToWebp(file)
+            uploadFile = await convertImageFileToWebp(file, compressionOptions)
             if (!uploadFile) {
                 showNotification('图片转 WebP 失败，请更换图片后重试')
                 return null

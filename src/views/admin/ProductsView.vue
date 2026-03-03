@@ -169,6 +169,14 @@ const store = useShopStore()
 const products = computed(() => store.state.products)
 const showModal = ref(false)
 const isEdit = ref(false)
+const DETAIL_IMAGE_COMPRESSION_OPTIONS = Object.freeze({
+    maxDimension: 2000,
+    targetSizeRatio: 0.92,
+    maxQuality: 0.9,
+    minQuality: 0.62,
+    qualityStep: 0.05,
+    scaleSteps: [1, 0.9, 0.8, 0.72, 0.64, 0.56]
+})
 
 // 表单初始状态
 const initialForm = {
@@ -201,7 +209,7 @@ const openModal = (product = null) => {
 
 // --- 裁切相关 ---
 const showCropModal = ref(false)
-const cropStep = ref(1) // 1=桌面端4:3, 2=移动端3:4
+const cropStep = ref(1) // 1=桌面端6:5, 2=移动端1:1.12
 const cropImageSrc = ref('')
 const cropImageEl = ref(null)
 const cropUploading = ref(false)
@@ -235,15 +243,16 @@ watch(showCropModal, (v) => {
     if (!v) destroyCropper()
 })
 
-const getCroppedBlob = () => {
+const getCroppedBlob = (step) => {
     return new Promise((resolve) => {
         if (!cropperInstance) return resolve(null)
+        const isDesktopCrop = step === 1
         cropperInstance.getCroppedCanvas({
-            maxWidth: 1200,
-            maxHeight: 1200,
+            maxWidth: isDesktopCrop ? 2200 : 1900,
+            maxHeight: isDesktopCrop ? 2200 : 1900,
             imageSmoothingEnabled: true,
             imageSmoothingQuality: 'high'
-        }).toBlob((blob) => resolve(blob), 'image/webp', 0.85)
+        }).toBlob((blob) => resolve(blob), 'image/webp', isDesktopCrop ? 0.93 : 0.91)
     })
 }
 
@@ -260,7 +269,7 @@ const handleUpload = async (e, type) => {
         const files = Array.from(e.target.files)
         e.target.value = ''
         for (const f of files) {
-            const url = await store.uploadImage(f)
+            const url = await store.uploadImage(f, DETAIL_IMAGE_COMPRESSION_OPTIONS)
             if (url) form.detailImages.push(url)
         }
         return
@@ -281,7 +290,7 @@ const handleUpload = async (e, type) => {
 const confirmCrop = async () => {
     cropUploading.value = true
     try {
-        const blob = await getCroppedBlob()
+        const blob = await getCroppedBlob(cropStep.value)
         if (!blob) return
 
         if (cropStep.value === 1) {
