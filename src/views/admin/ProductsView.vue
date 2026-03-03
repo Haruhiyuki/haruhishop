@@ -177,6 +177,21 @@ const DETAIL_IMAGE_COMPRESSION_OPTIONS = Object.freeze({
     qualityStep: 0.05,
     scaleSteps: [1, 0.9, 0.8, 0.72, 0.64, 0.56]
 })
+const HEADER_IMAGE_COMPRESSION_CONFIG = Object.freeze({
+    desktop: {
+        maxWidth: 1800,
+        maxHeight: 1800,
+        targetBytes: 360 * 1024
+    },
+    mobile: {
+        maxWidth: 1500,
+        maxHeight: 1700,
+        targetBytes: 280 * 1024
+    },
+    qualitySteps: [0.92, 0.88, 0.84, 0.8, 0.76, 0.72, 0.68, 0.64],
+    maxScaleRounds: 4,
+    scaleFactorPerRound: 0.9
+})
 
 // 表单初始状态
 const initialForm = {
@@ -245,17 +260,56 @@ watch(showCropModal, (v) => {
     if (!v) destroyCropper()
 })
 
-const getCroppedBlob = (step) => {
-    return new Promise((resolve) => {
-        if (!cropperInstance) return resolve(null)
-        const isDesktopCrop = step === 1
-        cropperInstance.getCroppedCanvas({
-            maxWidth: isDesktopCrop ? 2200 : 1900,
-            maxHeight: isDesktopCrop ? 2200 : 1900,
-            imageSmoothingEnabled: true,
-            imageSmoothingQuality: 'high'
-        }).toBlob((blob) => resolve(blob), 'image/webp', isDesktopCrop ? 0.93 : 0.91)
+const encodeCanvasToWebp = (canvas, quality) => (
+    new Promise((resolve) => {
+        canvas.toBlob((blob) => resolve(blob), 'image/webp', quality)
     })
+)
+
+const downscaleCanvas = (sourceCanvas, scaleFactor) => {
+    const nextWidth = Math.max(1, Math.round(sourceCanvas.width * scaleFactor))
+    const nextHeight = Math.max(1, Math.round(sourceCanvas.height * scaleFactor))
+    if (nextWidth === sourceCanvas.width && nextHeight === sourceCanvas.height) return sourceCanvas
+
+    const canvas = document.createElement('canvas')
+    canvas.width = nextWidth
+    canvas.height = nextHeight
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return sourceCanvas
+    ctx.imageSmoothingEnabled = true
+    ctx.imageSmoothingQuality = 'high'
+    ctx.drawImage(sourceCanvas, 0, 0, nextWidth, nextHeight)
+    return canvas
+}
+
+const getCroppedBlob = async (step) => {
+    if (!cropperInstance) return null
+    const isDesktopCrop = step === 1
+    const sizeConfig = isDesktopCrop
+        ? HEADER_IMAGE_COMPRESSION_CONFIG.desktop
+        : HEADER_IMAGE_COMPRESSION_CONFIG.mobile
+
+    let canvas = cropperInstance.getCroppedCanvas({
+        maxWidth: sizeConfig.maxWidth,
+        maxHeight: sizeConfig.maxHeight,
+        imageSmoothingEnabled: true,
+        imageSmoothingQuality: 'high'
+    })
+    if (!canvas) return null
+
+    let bestBlob = null
+    for (let round = 0; round < HEADER_IMAGE_COMPRESSION_CONFIG.maxScaleRounds; round += 1) {
+        for (const quality of HEADER_IMAGE_COMPRESSION_CONFIG.qualitySteps) {
+            const blob = await encodeCanvasToWebp(canvas, quality)
+            if (!blob) continue
+            if (!bestBlob || blob.size < bestBlob.size) bestBlob = blob
+            if (blob.size <= sizeConfig.targetBytes) return blob
+        }
+        if (round < HEADER_IMAGE_COMPRESSION_CONFIG.maxScaleRounds - 1) {
+            canvas = downscaleCanvas(canvas, HEADER_IMAGE_COMPRESSION_CONFIG.scaleFactorPerRound)
+        }
+    }
+    return bestBlob
 }
 
 const uploadBlob = async (blob, suffix) => {
