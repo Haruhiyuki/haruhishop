@@ -67,48 +67,32 @@ const getFileBaseName = (filename = '') => String(filename).replace(/\.[^/.]+$/,
 
 const renameFileToWebp = (file) => {
     if (!(file instanceof File)) return file
+    if (String(file.type || '').toLowerCase() !== 'image/webp') return file
     if (String(file.name || '').toLowerCase().endsWith('.webp')) return file
     return new File([file], `${getFileBaseName(file.name)}.webp`, {
-        type: 'image/webp',
+        type: file.type || 'image/webp',
         lastModified: file.lastModified || Date.now()
     })
+}
+
+let webpEncodeSupportCache = null
+const canEncodeWebp = () => {
+    if (webpEncodeSupportCache !== null) return webpEncodeSupportCache
+    try {
+        const canvas = document.createElement('canvas')
+        canvas.width = 1
+        canvas.height = 1
+        webpEncodeSupportCache = canvas.toDataURL('image/webp').startsWith('data:image/webp')
+    } catch {
+        webpEncodeSupportCache = false
+    }
+    return webpEncodeSupportCache
 }
 
 const clampNumber = (value, min, max, fallback) => {
     const num = Number(value)
     if (!Number.isFinite(num)) return fallback
     return Math.min(max, Math.max(min, num))
-}
-
-const buildQualitySteps = (maxQuality, minQuality, qualityStep) => {
-    const start = clampNumber(maxQuality, 0.5, 1, 0.92)
-    const end = clampNumber(minQuality, 0.5, start, 0.65)
-    const step = clampNumber(qualityStep, 0.01, 0.2, 0.06)
-    const qualities = []
-
-    for (let quality = start; quality >= end; quality -= step) {
-        qualities.push(Number(quality.toFixed(2)))
-    }
-
-    const tail = Number(end.toFixed(2))
-    if (!qualities.includes(tail)) qualities.push(tail)
-    return qualities
-}
-
-const buildScaleSteps = (scaleSteps) => {
-    const base = Array.isArray(scaleSteps) && scaleSteps.length > 0
-        ? scaleSteps
-        : [1, 0.92, 0.84, 0.76, 0.68, 0.6]
-
-    const uniqueScales = []
-    base.forEach((value) => {
-        const scale = clampNumber(value, 0.4, 1, NaN)
-        if (!Number.isFinite(scale)) return
-        const normalized = Number(scale.toFixed(2))
-        if (!uniqueScales.includes(normalized)) uniqueScales.push(normalized)
-    })
-    if (!uniqueScales.includes(1)) uniqueScales.push(1)
-    return uniqueScales.sort((a, b) => b - a)
 }
 
 const loadImageFromObjectUrl = (objectUrl) => (
@@ -120,24 +104,22 @@ const loadImageFromObjectUrl = (objectUrl) => (
     })
 )
 
-const createCanvasFromImage = (image, { maxDimension, scale }) => {
+const createCanvasFromImage = (image, { maxDimension }) => {
     const rawWidth = Number(image.naturalWidth || image.width || 0)
     const rawHeight = Number(image.naturalHeight || image.height || 0)
     if (!rawWidth || !rawHeight) return null
 
     let width = rawWidth
     let height = rawHeight
-    const longestEdge = Math.max(width, height)
-    const limitedMaxDimension = clampNumber(maxDimension, 200, 6000, 2200)
-    if (longestEdge > limitedMaxDimension) {
-        const ratio = limitedMaxDimension / longestEdge
-        width = Math.max(1, Math.round(width * ratio))
-        height = Math.max(1, Math.round(height * ratio))
-    }
-
-    if (scale < 1) {
-        width = Math.max(1, Math.round(width * scale))
-        height = Math.max(1, Math.round(height * scale))
+    const resolvedMaxDimensionRaw = Number(maxDimension)
+    if (Number.isFinite(resolvedMaxDimensionRaw) && resolvedMaxDimensionRaw > 0) {
+        const longestEdge = Math.max(width, height)
+        const resolvedMaxDimension = clampNumber(resolvedMaxDimensionRaw, 200, 6000, 2200)
+        if (longestEdge > resolvedMaxDimension) {
+            const ratio = resolvedMaxDimension / longestEdge
+            width = Math.max(1, Math.round(width * ratio))
+            height = Math.max(1, Math.round(height * ratio))
+        }
     }
 
     const canvas = document.createElement('canvas')
@@ -161,45 +143,24 @@ const convertImageFileToWebp = async (file, options = {}) => {
     if (!(file instanceof File)) return null
     if (!String(file.type || '').startsWith('image/')) return null
     if (String(file.type) === 'image/webp') return renameFileToWebp(file)
+    if (!canEncodeWebp()) return null
 
-    const targetSizeRatio = clampNumber(options?.targetSizeRatio, 0.4, 1, 0.95)
-    const targetMaxBytes = clampNumber(
-        options?.targetMaxBytes,
-        1024,
-        20 * 1024 * 1024,
-        Math.max(1024, Math.round((Number(file.size) || 0) * targetSizeRatio))
-    )
-    const qualitySteps = buildQualitySteps(options?.maxQuality, options?.minQuality, options?.qualityStep)
-    const scaleSteps = buildScaleSteps(options?.scaleSteps)
+    const quality = clampNumber(options?.quality, 0.5, 1, 0.84)
 
     const objectUrl = URL.createObjectURL(file)
     try {
         const image = await loadImageFromObjectUrl(objectUrl)
-        let smallestBlob = null
+        const canvas = createCanvasFromImage(image, {
+            maxDimension: options?.maxDimension
+        })
+        if (!canvas) throw new Error('画布初始化失败')
 
-        for (const scale of scaleSteps) {
-            const canvas = createCanvasFromImage(image, {
-                maxDimension: options?.maxDimension,
-                scale
-            })
-            if (!canvas) continue
+        const blob = await encodeCanvasToWebp(canvas, quality)
+        if (!blob) throw new Error('WebP 编码失败')
+        if (String(blob.type || '').toLowerCase() !== 'image/webp') throw new Error('WebP 编码失败')
 
-            for (const quality of qualitySteps) {
-                const blob = await encodeCanvasToWebp(canvas, quality)
-                if (!blob) continue
-                if (!smallestBlob || blob.size < smallestBlob.size) smallestBlob = blob
-                if (blob.size <= targetMaxBytes) {
-                    return new File([blob], `${getFileBaseName(file.name)}.webp`, {
-                        type: 'image/webp',
-                        lastModified: Date.now()
-                    })
-                }
-            }
-        }
-
-        if (!smallestBlob) throw new Error('WebP 编码失败')
-        return new File([smallestBlob], `${getFileBaseName(file.name)}.webp`, {
-            type: 'image/webp',
+        return new File([blob], `${getFileBaseName(file.name)}.webp`, {
+            type: blob.type,
             lastModified: Date.now()
         })
     } catch {
@@ -629,12 +590,7 @@ export const useShopStore = () => {
         const shouldConvertToWebp = options?.convertToWebp ?? purpose === 'general'
         const compressionOptions = {
             maxDimension: options?.maxDimension,
-            targetSizeRatio: options?.targetSizeRatio,
-            targetMaxBytes: options?.targetMaxBytes,
-            maxQuality: options?.maxQuality,
-            minQuality: options?.minQuality,
-            qualityStep: options?.qualityStep,
-            scaleSteps: options?.scaleSteps
+            quality: options?.quality
         }
 
         let uploadFile = file

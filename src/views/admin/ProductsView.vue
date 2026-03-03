@@ -171,26 +171,22 @@ const showModal = ref(false)
 const isEdit = ref(false)
 const DETAIL_IMAGE_COMPRESSION_OPTIONS = Object.freeze({
     maxDimension: 2000,
-    targetSizeRatio: 0.92,
-    maxQuality: 0.9,
-    minQuality: 0.62,
-    qualityStep: 0.05,
-    scaleSteps: [1, 0.9, 0.8, 0.72, 0.64, 0.56]
+    quality: 0.82
 })
 const HEADER_IMAGE_COMPRESSION_CONFIG = Object.freeze({
     desktop: {
         maxWidth: 1800,
         maxHeight: 1800,
-        targetBytes: 360 * 1024
+        quality: 0.84
     },
     mobile: {
         maxWidth: 1500,
         maxHeight: 1700,
-        targetBytes: 280 * 1024
+        quality: 0.82
     },
-    qualitySteps: [0.92, 0.88, 0.84, 0.8, 0.76, 0.72, 0.68, 0.64],
-    maxScaleRounds: 4,
-    scaleFactorPerRound: 0.9
+    original: {
+        quality: 0.88
+    }
 })
 
 // 表单初始状态
@@ -266,22 +262,6 @@ const encodeCanvasToWebp = (canvas, quality) => (
     })
 )
 
-const downscaleCanvas = (sourceCanvas, scaleFactor) => {
-    const nextWidth = Math.max(1, Math.round(sourceCanvas.width * scaleFactor))
-    const nextHeight = Math.max(1, Math.round(sourceCanvas.height * scaleFactor))
-    if (nextWidth === sourceCanvas.width && nextHeight === sourceCanvas.height) return sourceCanvas
-
-    const canvas = document.createElement('canvas')
-    canvas.width = nextWidth
-    canvas.height = nextHeight
-    const ctx = canvas.getContext('2d')
-    if (!ctx) return sourceCanvas
-    ctx.imageSmoothingEnabled = true
-    ctx.imageSmoothingQuality = 'high'
-    ctx.drawImage(sourceCanvas, 0, 0, nextWidth, nextHeight)
-    return canvas
-}
-
 const getCroppedBlob = async (step) => {
     if (!cropperInstance) return null
     const isDesktopCrop = step === 1
@@ -297,22 +277,14 @@ const getCroppedBlob = async (step) => {
     })
     if (!canvas) return null
 
-    let bestBlob = null
-    for (let round = 0; round < HEADER_IMAGE_COMPRESSION_CONFIG.maxScaleRounds; round += 1) {
-        for (const quality of HEADER_IMAGE_COMPRESSION_CONFIG.qualitySteps) {
-            const blob = await encodeCanvasToWebp(canvas, quality)
-            if (!blob) continue
-            if (!bestBlob || blob.size < bestBlob.size) bestBlob = blob
-            if (blob.size <= sizeConfig.targetBytes) return blob
-        }
-        if (round < HEADER_IMAGE_COMPRESSION_CONFIG.maxScaleRounds - 1) {
-            canvas = downscaleCanvas(canvas, HEADER_IMAGE_COMPRESSION_CONFIG.scaleFactorPerRound)
-        }
-    }
-    return bestBlob
+    const blob = await encodeCanvasToWebp(canvas, sizeConfig.quality)
+    if (!blob) return null
+    if (String(blob.type || '').toLowerCase() !== 'image/webp') return null
+    return blob
 }
 
 const uploadBlob = async (blob, suffix) => {
+    if (String(blob?.type || '').toLowerCase() !== 'image/webp') return null
     const file = new File([blob], `crop-${suffix}-${Date.now()}.webp`, { type: 'image/webp' })
     return await store.uploadImage(file, { convertToWebp: false })
 }
@@ -333,7 +305,8 @@ const handleUpload = async (e, type) => {
 
     const originalUrl = await store.uploadImage(file, {
         purpose: 'original',
-        convertToWebp: false
+        convertToWebp: true,
+        quality: HEADER_IMAGE_COMPRESSION_CONFIG.original.quality
     })
     if (!originalUrl) {
         e.target.value = ''
@@ -357,7 +330,14 @@ const confirmCrop = async () => {
     cropUploading.value = true
     try {
         const blob = await getCroppedBlob(cropStep.value)
-        if (!blob) return
+        if (!blob) {
+            store.showNotification('WebP 编码失败，请更换浏览器后重试')
+            return
+        }
+        if (String(blob.type || '').toLowerCase() !== 'image/webp') {
+            store.showNotification('当前环境不支持 WebP 编码，请使用最新版 Chrome/Edge/Safari')
+            return
+        }
 
         if (cropStep.value === 1) {
             // 桌面端裁切完成 → 上传 → 进入步骤2

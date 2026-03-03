@@ -64,6 +64,29 @@ const apiPath = (routePath = '') => {
 const uploadDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir);
 
+const isWebpBufferHeader = (buffer) => (
+    Buffer.isBuffer(buffer) &&
+    buffer.length >= 12 &&
+    buffer.toString('ascii', 0, 4) === 'RIFF' &&
+    buffer.toString('ascii', 8, 12) === 'WEBP'
+);
+
+const isRealWebpFile = (filePath) => {
+    let fd = null;
+    try {
+        fd = fs.openSync(filePath, 'r');
+        const header = Buffer.alloc(12);
+        const bytesRead = fs.readSync(fd, header, 0, 12, 0);
+        return bytesRead >= 12 && isWebpBufferHeader(header);
+    } catch (_) {
+        return false;
+    } finally {
+        if (fd !== null) {
+            try { fs.closeSync(fd); } catch (_) { /* ignore */ }
+        }
+    }
+};
+
 const storage = multer.diskStorage({
     destination: (req, file, cb) => cb(null, uploadDir),
     filename: (req, file, cb) => {
@@ -1423,6 +1446,11 @@ app.post(apiPath('/upload'), requireAdminAuth, upload.single('file'), (req, res)
     if (purpose === 'general' && mimeType !== 'image/webp') {
         removeUploadedFile();
         return res.status(400).json({ error: '非二维码图片仅支持 WebP 上传' });
+    }
+
+    if (purpose === 'general' && !isRealWebpFile(req.file.path)) {
+        removeUploadedFile();
+        return res.status(400).json({ error: 'WebP 文件内容无效，请更换浏览器后重试' });
     }
 
     if (purpose === 'general') {
