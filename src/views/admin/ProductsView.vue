@@ -103,14 +103,24 @@
 
                 <!-- 第八行：详情多图上传 -->
                 <div class="full-span">
-                    <label class="form-label">详情页图片组</label>
-                    <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 0.5rem;">
-                        <div v-for="(img, idx) in form.detailImages" :key="idx" style="position: relative;">
-                            <img :src="img" style="width: 80px; height: 80px; object-fit: cover; border: 1px solid #ddd;">
-                            <button @click="removeDetailImg(idx)" style="position: absolute; top:0; right:0; background: red; color: white; border: none; width: 20px; height: 20px; cursor: pointer;">×</button>
+                    <label class="form-label">详情页图片组 <span style="font-weight: normal; color: #999; font-size: 0.75rem;">拖拽可排序</span></label>
+                    <div class="detail-images-sortable">
+                        <div
+                            v-for="(img, idx) in form.detailImages" :key="img"
+                            class="detail-img-item"
+                            draggable="true"
+                            :class="{ 'drag-over': dragOverIdx === idx }"
+                            @dragstart="onDragStart(idx, $event)"
+                            @dragover.prevent="onDragOver(idx)"
+                            @dragleave="onDragLeave"
+                            @drop.prevent="onDrop(idx)"
+                            @dragend="onDragEnd"
+                        >
+                            <img :src="img" style="width: 80px; height: 80px; object-fit: cover; border-radius: 4px;">
+                            <button @click="removeDetailImg(idx)" class="detail-img-remove">×</button>
                         </div>
                     </div>
-                    <input type="file" @change="e => handleUpload(e, 'detail')" accept="image/*">
+                    <input type="file" @change="e => handleUpload(e, 'detail')" accept="image/*" multiple>
                 </div>
 
             </div>
@@ -240,9 +250,12 @@ const handleUpload = async (e, type) => {
     if (!file) return
 
     if (type === 'detail') {
-        const url = await store.uploadImage(file)
-        if (url) form.detailImages.push(url)
+        const files = Array.from(e.target.files)
         e.target.value = ''
+        for (const f of files) {
+            const url = await store.uploadImage(f)
+            if (url) form.detailImages.push(url)
+        }
         return
     }
 
@@ -303,6 +316,30 @@ const closeCropModal = () => {
         pendingFileInput.value = ''
         pendingFileInput = null
     }
+}
+
+// --- 详情图拖拽排序 ---
+const dragFromIdx = ref(-1)
+const dragOverIdx = ref(-1)
+
+const onDragStart = (idx, e) => {
+    dragFromIdx.value = idx
+    e.dataTransfer.effectAllowed = 'move'
+}
+const onDragOver = (idx) => { dragOverIdx.value = idx }
+const onDragLeave = () => { dragOverIdx.value = -1 }
+const onDrop = (idx) => {
+    const from = dragFromIdx.value
+    if (from !== -1 && from !== idx) {
+        const item = form.detailImages.splice(from, 1)[0]
+        form.detailImages.splice(idx, 0, item)
+    }
+    dragFromIdx.value = -1
+    dragOverIdx.value = -1
+}
+const onDragEnd = () => {
+    dragFromIdx.value = -1
+    dragOverIdx.value = -1
 }
 
 const addSpec = () => form.specs.push({ key: '', val: '' })
@@ -393,6 +430,40 @@ const save = async () => {
 .thumb-label {
     font-size: 0.675rem;
     color: #888;
+}
+
+/* 详情图排序 */
+.detail-images-sortable {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    margin-bottom: 0.5rem;
+}
+.detail-img-item {
+    position: relative;
+    cursor: grab;
+    border: 2px solid transparent;
+    border-radius: 4px;
+    transition: border-color 0.15s;
+}
+.detail-img-item:active { cursor: grabbing; }
+.detail-img-item.drag-over {
+    border-color: #3b82f6;
+}
+.detail-img-remove {
+    position: absolute;
+    top: 0;
+    right: 0;
+    background: red;
+    color: white;
+    border: none;
+    width: 20px;
+    height: 20px;
+    cursor: pointer;
+    line-height: 20px;
+    text-align: center;
+    padding: 0;
+    border-radius: 0 4px 0 4px;
 }
 
 /* 裁切弹窗 */
