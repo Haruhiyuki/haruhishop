@@ -38,7 +38,7 @@
         <div class="modal-card product-modal-card">
             <h3 class="modal-title">{{ isEdit ? '编辑商品' : '新增商品' }}</h3>
             <div class="form-grid product-form-grid">
-                
+
                 <!-- 第一行：基础信息 -->
                 <div><label class="form-label">名称</label><input v-model="form.name" class="form-input"></div>
                 <div><label class="form-label">分类名</label><input v-model="form.category" class="form-input" placeholder="如: 立牌、卡贴、折扇"></div>
@@ -56,7 +56,7 @@
                 <div><label class="form-label">价格 (¥)</label><input v-model.number="form.price" class="form-input" type="number"></div>
                 <div><label class="form-label">折扣价 (¥)</label><input v-model="form.discountPrice" class="form-input" type="number" min="0" step="0.01" placeholder="留空表示不打折"></div>
                 <div><label class="form-label">库存</label><input v-model.number="form.stock" class="form-input" type="number"></div>
-                
+
                 <!-- 第三行：运费 -->
                 <div><label class="form-label">单品运费 (¥)</label><input v-model.number="form.shippingCost" class="form-input" type="number"></div>
 
@@ -64,7 +64,16 @@
                 <div class="full-span">
                     <label class="form-label">商品主图</label>
                     <div class="main-image-row">
-                        <img v-if="form.image" :src="form.image" style="width: 60px; height: 60px; object-fit: cover; border: 1px solid #ddd; border-radius: 4px;">
+                        <div v-if="form.image" class="thumb-group">
+                            <div class="thumb-item">
+                                <img :src="form.image" class="thumb-img thumb-desktop">
+                                <span class="thumb-label">桌面端</span>
+                            </div>
+                            <div v-if="form.imageMobile" class="thumb-item">
+                                <img :src="form.imageMobile" class="thumb-img thumb-mobile">
+                                <span class="thumb-label">移动端</span>
+                            </div>
+                        </div>
                         <input type="file" @change="e => handleUpload(e, 'image')" accept="image/*">
                     </div>
                 </div>
@@ -111,12 +120,33 @@
             </div>
         </div>
     </div>
+
+    <!-- 裁切弹窗 -->
+    <div v-if="showCropModal" class="modal-overlay" style="z-index: 1100;">
+        <div class="modal-card crop-modal-card">
+            <h3 class="modal-title">
+                {{ cropStep === 1 ? '步骤 1/2：裁切桌面端头图 (4:3)' : '步骤 2/2：裁切移动端头图 (3:4)' }}
+            </h3>
+            <div class="crop-container">
+                <img ref="cropImageEl" :src="cropImageSrc">
+            </div>
+            <div class="modal-actions">
+                <button @click="cancelCrop" class="admin-btn btn-outline">取消</button>
+                <button v-if="cropStep === 2" @click="skipMobileCrop" class="admin-btn btn-outline">跳过移动端</button>
+                <button @click="confirmCrop" class="admin-btn btn-blue" :disabled="cropUploading">
+                    {{ cropUploading ? '上传中...' : '确认裁切' }}
+                </button>
+            </div>
+        </div>
+    </div>
   </div>
 </template>
 
 <script setup>
-import { ref, computed, onMounted, reactive } from 'vue'
+import { ref, computed, onMounted, reactive, nextTick, watch, onBeforeUnmount } from 'vue'
 import { useShopStore } from '@/stores/shopStore'
+import Cropper from 'cropperjs'
+import 'cropperjs/dist/cropper.css'
 
 const store = useShopStore()
 const products = computed(() => store.state.products)
@@ -127,7 +157,7 @@ const isEdit = ref(false)
 const initialForm = {
     id: null, name: '', price: 0, category: '', stock: 100,
     discountPrice: '',
-    image: '', desc: '',
+    image: '', imageMobile: '', desc: '',
     specs: [], detailText: '', detailImages: [],
     shippingTag: '深圳', shippingCost: 0
 }
@@ -139,11 +169,10 @@ onMounted(() => { store.fetchProducts() })
 const openModal = (product = null) => {
     if (product) {
         isEdit.value = true
-        // 深度拷贝以避免引用问题，特别是数组
         const p = JSON.parse(JSON.stringify(product))
         Object.assign(form, p)
         form.discountPrice = p.discountPrice ?? ''
-        // 确保数组存在
+        form.imageMobile = p.imageMobile || ''
         if (!form.specs) form.specs = []
         if (!form.detailImages) form.detailImages = []
     } else {
@@ -153,18 +182,127 @@ const openModal = (product = null) => {
     showModal.value = true
 }
 
+// --- 裁切相关 ---
+const showCropModal = ref(false)
+const cropStep = ref(1) // 1=桌面端4:3, 2=移动端3:4
+const cropImageSrc = ref('')
+const cropImageEl = ref(null)
+const cropUploading = ref(false)
+let cropperInstance = null
+let pendingFileInput = null
+
+const destroyCropper = () => {
+    if (cropperInstance) {
+        cropperInstance.destroy()
+        cropperInstance = null
+    }
+}
+
+onBeforeUnmount(() => { destroyCropper() })
+
+const initCropper = (aspectRatio) => {
+    destroyCropper()
+    nextTick(() => {
+        if (!cropImageEl.value) return
+        cropperInstance = new Cropper(cropImageEl.value, {
+            aspectRatio,
+            viewMode: 1,
+            autoCropArea: 1,
+            responsive: true,
+            restore: false
+        })
+    })
+}
+
+watch(showCropModal, (v) => {
+    if (!v) destroyCropper()
+})
+
+const getCroppedBlob = () => {
+    return new Promise((resolve) => {
+        if (!cropperInstance) return resolve(null)
+        cropperInstance.getCroppedCanvas({
+            maxWidth: 1200,
+            maxHeight: 1200,
+            imageSmoothingEnabled: true,
+            imageSmoothingQuality: 'high'
+        }).toBlob((blob) => resolve(blob), 'image/webp', 0.85)
+    })
+}
+
+const uploadBlob = async (blob, suffix) => {
+    const file = new File([blob], `crop-${suffix}-${Date.now()}.webp`, { type: 'image/webp' })
+    return await store.uploadImage(file, { convertToWebp: false })
+}
+
 const handleUpload = async (e, type) => {
     const file = e.target.files[0]
     if (!file) return
-    const url = await store.uploadImage(file)
-    if (url) {
-        if (type === 'image') {
-            form.image = url
-        } else {
-            form.detailImages.push(url)
-        }
+
+    if (type === 'detail') {
+        const url = await store.uploadImage(file)
+        if (url) form.detailImages.push(url)
+        e.target.value = ''
+        return
     }
-    e.target.value = '' // reset input
+
+    // 主图 → 打开裁切弹窗
+    const reader = new FileReader()
+    reader.onload = (ev) => {
+        cropImageSrc.value = ev.target.result
+        cropStep.value = 1
+        showCropModal.value = true
+        nextTick(() => initCropper(4 / 3))
+    }
+    reader.readAsDataURL(file)
+    pendingFileInput = e.target
+}
+
+const confirmCrop = async () => {
+    cropUploading.value = true
+    try {
+        const blob = await getCroppedBlob()
+        if (!blob) return
+
+        if (cropStep.value === 1) {
+            // 桌面端裁切完成 → 上传 → 进入步骤2
+            const url = await uploadBlob(blob, 'desktop')
+            if (!url) return
+            form.image = url
+            // 进入移动端裁切
+            cropStep.value = 2
+            destroyCropper()
+            await nextTick()
+            initCropper(3 / 4)
+        } else {
+            // 移动端裁切完成 → 上传 → 关闭弹窗
+            const url = await uploadBlob(blob, 'mobile')
+            if (!url) return
+            form.imageMobile = url
+            closeCropModal()
+        }
+    } finally {
+        cropUploading.value = false
+    }
+}
+
+const skipMobileCrop = () => {
+    form.imageMobile = ''
+    closeCropModal()
+}
+
+const cancelCrop = () => {
+    closeCropModal()
+}
+
+const closeCropModal = () => {
+    showCropModal.value = false
+    cropImageSrc.value = ''
+    destroyCropper()
+    if (pendingFileInput) {
+        pendingFileInput.value = ''
+        pendingFileInput = null
+    }
 }
 
 const addSpec = () => form.specs.push({ key: '', val: '' })
@@ -226,6 +364,52 @@ const save = async () => {
     display: flex;
     gap: 1rem;
     align-items: center;
+}
+
+.thumb-group {
+    display: flex;
+    gap: 0.75rem;
+    align-items: flex-end;
+}
+.thumb-item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.25rem;
+}
+.thumb-img {
+    object-fit: cover;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+}
+.thumb-desktop {
+    width: 80px;
+    height: 60px;
+}
+.thumb-mobile {
+    width: 45px;
+    height: 60px;
+}
+.thumb-label {
+    font-size: 0.675rem;
+    color: #888;
+}
+
+/* 裁切弹窗 */
+.crop-modal-card {
+    width: min(720px, 94vw);
+    max-height: 90vh;
+    overflow-y: auto;
+}
+.crop-container {
+    max-height: 60vh;
+    overflow: hidden;
+    background: #f0f0f0;
+    border-radius: 4px;
+}
+.crop-container img {
+    display: block;
+    max-width: 100%;
 }
 
 @media (max-width: 1023px) {

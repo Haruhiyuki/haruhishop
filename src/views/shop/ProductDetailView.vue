@@ -17,7 +17,10 @@
                 @keydown.enter.prevent="openMainImagePreview"
                 @keydown.space.prevent="openMainImagePreview"
             >
-                <img :src="product.image" alt="商品主图">
+                <picture>
+                    <source v-if="product.imageMobile" media="(max-width: 767px)" :srcset="product.imageMobile">
+                    <img :src="product.image" alt="商品主图">
+                </picture>
             </div>
             <div class="detail-info">
                 <div>

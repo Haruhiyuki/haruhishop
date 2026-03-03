@@ -151,6 +151,7 @@ db.serialize(() => {
     ensureColumn('orders', 'couponCode', 'TEXT');
     ensureColumn('orders', 'mergeMeta', 'TEXT');
     ensureColumn('contact_messages', 'handled_at', 'DATETIME');
+    ensureColumn('products', 'imageMobile', 'TEXT');
 });
 
 module.exports = db;

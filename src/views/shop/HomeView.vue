@@ -8,7 +8,10 @@
     <div v-if="filteredProducts.length > 0" class="product-grid">
         <div v-for="item in filteredProducts" :key="item.id" class="product-card group" @click="$router.push(`/product/${item.id}`)">
             <div class="card-image-wrapper">
-                <img :src="item.image" :alt="item.name" class="card-image">
+                <picture>
+                    <source v-if="item.imageMobile" media="(max-width: 639px)" :srcset="item.imageMobile">
+                    <img :src="item.image" :alt="item.name" class="card-image">
+                </picture>
                 <div class="card-overlay">
                     <button class="market-btn" @click.stop="store.addToCart(item)">加入购物车</button>
                 </div>
