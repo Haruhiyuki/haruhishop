@@ -182,7 +182,7 @@ const DETAIL_IMAGE_COMPRESSION_OPTIONS = Object.freeze({
 const initialForm = {
     id: null, name: '', price: 0, category: '', stock: 100,
     discountPrice: '',
-    image: '', imageMobile: '', desc: '',
+    image: '', imageMobile: '', imageOriginal: '', desc: '',
     specs: [], detailText: '', detailImages: [],
     shippingTag: '深圳', shippingCost: 0
 }
@@ -198,6 +198,7 @@ const openModal = (product = null) => {
         Object.assign(form, p)
         form.discountPrice = p.discountPrice ?? ''
         form.imageMobile = p.imageMobile || ''
+        form.imageOriginal = p.imageOriginal || ''
         if (!form.specs) form.specs = []
         if (!form.detailImages) form.detailImages = []
     } else {
@@ -215,6 +216,7 @@ const cropImageEl = ref(null)
 const cropUploading = ref(false)
 let cropperInstance = null
 let pendingFileInput = null
+let pendingImageOriginalUrl = ''
 
 const destroyCropper = () => {
     if (cropperInstance) {
@@ -275,6 +277,16 @@ const handleUpload = async (e, type) => {
         return
     }
 
+    const originalUrl = await store.uploadImage(file, {
+        purpose: 'original',
+        convertToWebp: false
+    })
+    if (!originalUrl) {
+        e.target.value = ''
+        return
+    }
+    pendingImageOriginalUrl = originalUrl
+
     // 主图 → 打开裁切弹窗
     const reader = new FileReader()
     reader.onload = (ev) => {
@@ -298,6 +310,7 @@ const confirmCrop = async () => {
             const url = await uploadBlob(blob, 'desktop')
             if (!url) return
             form.image = url
+            if (pendingImageOriginalUrl) form.imageOriginal = pendingImageOriginalUrl
             // 进入移动端裁切
             cropStep.value = 2
             destroyCropper()
@@ -328,6 +341,7 @@ const closeCropModal = () => {
     showCropModal.value = false
     cropImageSrc.value = ''
     destroyCropper()
+    pendingImageOriginalUrl = ''
     if (pendingFileInput) {
         pendingFileInput.value = ''
         pendingFileInput = null

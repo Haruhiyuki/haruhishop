@@ -33,6 +33,7 @@ db.serialize(() => {
         typeId TEXT,
         stock INTEGER,
         image TEXT,
+        imageOriginal TEXT,
         desc TEXT,
         specs TEXT,
         detailText TEXT,
@@ -152,6 +153,7 @@ db.serialize(() => {
     ensureColumn('orders', 'mergeMeta', 'TEXT');
     ensureColumn('contact_messages', 'handled_at', 'DATETIME');
     ensureColumn('products', 'imageMobile', 'TEXT');
+    ensureColumn('products', 'imageOriginal', 'TEXT');
     ensureColumn('products', 'sortOrder', 'INTEGER DEFAULT 0');
 });
 

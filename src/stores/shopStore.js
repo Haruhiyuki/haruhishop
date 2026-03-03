@@ -46,6 +46,7 @@ const normalizeProduct = (product = {}) => {
     const basePrice = Number(product.price)
     return {
         ...product,
+        imageOriginal: typeof product.imageOriginal === 'string' ? product.imageOriginal : '',
         price: Number.isFinite(basePrice) ? Number(basePrice.toFixed(2)) : 0,
         discountPrice: normalizeDiscountPrice(product.discountPrice, product.price),
         shippingCost: Number.isFinite(Number(product.shippingCost)) ? Number(product.shippingCost) : 0
@@ -622,8 +623,10 @@ export const useShopStore = () => {
 
     const uploadImage = async (file, options = {}) => {
         if (!ensureAdminAuth()) return null
-        const purpose = options?.purpose === 'qr' ? 'qr' : 'general'
-        const shouldConvertToWebp = options?.convertToWebp ?? purpose !== 'qr'
+        const purpose = options?.purpose === 'qr'
+            ? 'qr'
+            : (options?.purpose === 'original' ? 'original' : 'general')
+        const shouldConvertToWebp = options?.convertToWebp ?? purpose === 'general'
         const compressionOptions = {
             maxDimension: options?.maxDimension,
             targetSizeRatio: options?.targetSizeRatio,

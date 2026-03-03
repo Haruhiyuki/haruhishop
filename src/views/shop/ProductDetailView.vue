@@ -116,7 +116,7 @@ const mainImagePreview = ref({
 })
 
 const openMainImagePreview = () => {
-    const imageUrl = String(product.value?.image || '').trim()
+    const imageUrl = String(product.value?.imageOriginal || product.value?.image || '').trim()
     if (!imageUrl) return
     mainImagePreview.value = {
         show: true,

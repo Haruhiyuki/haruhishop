@@ -1390,6 +1390,7 @@ app.get(apiPath('/products'), (req, res) => {
             ...p,
             price: Number(p.price) || 0,
             discountPrice: normalizeDiscountPrice(p.discountPrice, p.price),
+            imageOriginal: p.imageOriginal || '',
             specs: safeParse(p.specs, []),
             detailImages: safeParse(p.detailImages, []),
             shippingTag: p.shippingTag || 'default',
@@ -1402,7 +1403,8 @@ app.get(apiPath('/products'), (req, res) => {
 app.post(apiPath('/upload'), requireAdminAuth, upload.single('file'), (req, res) => {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
 
-    const purpose = String(req.body?.purpose || '').trim().toLowerCase() === 'qr' ? 'qr' : 'general';
+    const rawPurpose = String(req.body?.purpose || '').trim().toLowerCase();
+    const purpose = rawPurpose === 'qr' ? 'qr' : (rawPurpose === 'original' ? 'original' : 'general');
     const mimeType = String(req.file.mimetype || '').toLowerCase();
     const isImage = mimeType.startsWith('image/');
     const removeUploadedFile = () => {
@@ -1418,12 +1420,12 @@ app.post(apiPath('/upload'), requireAdminAuth, upload.single('file'), (req, res)
         return res.status(400).json({ error: '仅支持图片文件' });
     }
 
-    if (purpose !== 'qr' && mimeType !== 'image/webp') {
+    if (purpose === 'general' && mimeType !== 'image/webp') {
         removeUploadedFile();
         return res.status(400).json({ error: '非二维码图片仅支持 WebP 上传' });
     }
 
-    if (purpose !== 'qr') {
+    if (purpose === 'general') {
         const ext = path.extname(req.file.filename).toLowerCase();
         if (ext !== '.webp') {
             const webpFilename = `${path.basename(req.file.filename, ext)}.webp`;
@@ -1443,7 +1445,7 @@ app.post(apiPath('/upload'), requireAdminAuth, upload.single('file'), (req, res)
 });
 
 app.post(apiPath('/products'), requireAdminAuth, (req, res) => {
-    const { name, price, discountPrice, category, typeId, stock, image, imageMobile, desc, specs, detailText, detailImages, shippingTag, shippingCost } = req.body;
+    const { name, price, discountPrice, category, typeId, stock, image, imageMobile, imageOriginal, desc, specs, detailText, detailImages, shippingTag, shippingCost } = req.body;
     const cleanPrice = Number(price);
     const cleanStock = Number(stock);
     const cleanShippingCost = Number(shippingCost || 0);
@@ -1462,7 +1464,7 @@ app.post(apiPath('/products'), requireAdminAuth, (req, res) => {
         return res.status(400).json({ error: '折扣价必须大于0且小于原价' });
     }
 
-    const sql = `INSERT INTO products (name, price, discountPrice, category, typeId, stock, image, imageMobile, desc, specs, detailText, detailImages, shippingTag, shippingCost) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+    const sql = `INSERT INTO products (name, price, discountPrice, category, typeId, stock, image, imageMobile, imageOriginal, desc, specs, detailText, detailImages, shippingTag, shippingCost) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
     const params = [
         String(name || '').trim(),
         cleanPrice,
@@ -1472,6 +1474,7 @@ app.post(apiPath('/products'), requireAdminAuth, (req, res) => {
         cleanStock,
         image || '',
         imageMobile || '',
+        imageOriginal || '',
         desc || '',
         JSON.stringify(specs || []),
         detailText || '',
@@ -1501,7 +1504,7 @@ app.put(apiPath('/products/reorder'), requireAdminAuth, (req, res) => {
 });
 
 app.put(apiPath('/products/:id'), requireAdminAuth, (req, res) => {
-    const { name, price, discountPrice, category, typeId, stock, image, imageMobile, desc, specs, detailText, detailImages, shippingTag, shippingCost } = req.body;
+    const { name, price, discountPrice, category, typeId, stock, image, imageMobile, imageOriginal, desc, specs, detailText, detailImages, shippingTag, shippingCost } = req.body;
     const cleanPrice = Number(price);
     const cleanStock = Number(stock);
     const cleanShippingCost = Number(shippingCost || 0);
@@ -1520,7 +1523,7 @@ app.put(apiPath('/products/:id'), requireAdminAuth, (req, res) => {
         return res.status(400).json({ error: '折扣价必须大于0且小于原价' });
     }
 
-    const sql = `UPDATE products SET name=?, price=?, discountPrice=?, category=?, typeId=?, stock=?, image=?, imageMobile=?, desc=?, specs=?, detailText=?, detailImages=?, shippingTag=?, shippingCost=? WHERE id=?`;
+    const sql = `UPDATE products SET name=?, price=?, discountPrice=?, category=?, typeId=?, stock=?, image=?, imageMobile=?, imageOriginal=?, desc=?, specs=?, detailText=?, detailImages=?, shippingTag=?, shippingCost=? WHERE id=?`;
     const params = [
         String(name || '').trim(),
         cleanPrice,
@@ -1530,6 +1533,7 @@ app.put(apiPath('/products/:id'), requireAdminAuth, (req, res) => {
         cleanStock,
         image || '',
         imageMobile || '',
+        imageOriginal || '',
         desc || '',
         JSON.stringify(specs || []),
         detailText || '',
