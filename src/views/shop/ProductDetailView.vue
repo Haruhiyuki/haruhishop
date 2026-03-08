@@ -60,7 +60,7 @@
                                 <span class="detail-presale-label">开做时间</span>
                                 <span class="detail-presale-value">{{ fixedPresaleDateText || '待设置' }}</span>
                             </div>
-                            <p class="detail-presale-note">按固定预售排期开做，请留意后续发货通知。</p>
+                            <p class="detail-presale-note">请留意后续发货通知。</p>
                         </template>
                     </div>
                     <!-- [修改] 动态渲染参数表 -->

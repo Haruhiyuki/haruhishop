@@ -41,9 +41,9 @@
                 </div>
                 <div v-else-if="item.presaleMode === PRESALE_MODES.FIXED" class="card-presale-box">
                     <div class="card-presale-head">
-                        <span class="presale-chip presale-chip-fixed">固定预售</span>
+                        <span class="presale-chip presale-chip-fixed">排期预售</span>
                     </div>
-                    <p class="card-presale-tip">预售开做时间：{{ getFixedPresaleDateText(item) || '待设置' }}</p>
+                    <p class="card-presale-tip">预售发货时间：{{ getFixedPresaleDateText(item) || '待设置' }}</p>
                 </div>
                 <div class="card-footer">
                     <span class="badge-tag">{{ item.category }}</span>
