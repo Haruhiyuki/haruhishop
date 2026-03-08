@@ -66,7 +66,11 @@
                 <!-- 第二行：价格库存 -->
                 <div><label class="form-label">价格 (¥)</label><input v-model.number="form.price" class="form-input" type="number"></div>
                 <div><label class="form-label">折扣价 (¥)</label><input v-model="form.discountPrice" class="form-input" type="number" min="0" step="0.01" placeholder="留空表示不打折"></div>
-                <div><label class="form-label">库存</label><input v-model.number="form.stock" class="form-input" type="number"></div>
+                <div v-if="!isEdit"><label class="form-label">库存</label><input v-model.number="form.stock" class="form-input" type="number"></div>
+                <div v-else>
+                    <label class="form-label">当前库存</label>
+                    <input :value="form.stock" class="form-input input-readonly" type="text" readonly>
+                </div>
 
                 <!-- 第三行：预售配置 -->
                 <div class="full-span presale-config-wrap">
@@ -106,6 +110,35 @@
                                 >
                             </div>
                         </template>
+                    </div>
+                </div>
+
+                <div v-if="isEdit" class="full-span presale-config-wrap">
+                    <div class="presale-config-head">
+                        <label class="form-label" style="margin: 0;">数量调整（增减）</label>
+                        <span class="presale-config-hint">填正数表示增加，负数表示减少，留空或 0 表示不调整</span>
+                    </div>
+                    <div class="presale-config-grid">
+                        <div>
+                            <label class="form-label">库存调整</label>
+                            <input v-model.number="form.stockAdjustDelta" class="form-input" type="number" step="1" placeholder="如 +30 或 -10">
+                            <div class="adjust-current-text">当前库存：{{ form.stock }}</div>
+                        </div>
+                        <div>
+                            <label class="form-label">预售进度调整</label>
+                            <input
+                                v-model.number="form.presalePaidAdjustDelta"
+                                class="form-input"
+                                type="number"
+                                step="1"
+                                placeholder="如 +20 或 -5"
+                                :disabled="form.presaleMode !== PRESALE_MODES.GOAL"
+                            >
+                            <div class="adjust-current-text" v-if="form.presaleMode === PRESALE_MODES.GOAL">
+                                当前进度：{{ form.presalePaidCount }}
+                            </div>
+                            <div class="adjust-current-text" v-else>仅目标达标预售支持进度调整</div>
+                        </div>
                     </div>
                 </div>
 
@@ -257,7 +290,10 @@ const initialForm = {
     presaleMode: PRESALE_MODES.NONE,
     presaleGoalTarget: '',
     presaleFixedDateType: PRESALE_FIXED_DATE_TYPES.MONTH_START,
-    presaleFixedDateValue: ''
+    presaleFixedDateValue: '',
+    presalePaidCount: 0,
+    stockAdjustDelta: 0,
+    presalePaidAdjustDelta: 0
 }
 
 const form = reactive({ ...initialForm })
@@ -276,6 +312,9 @@ const openModal = (product = null) => {
         form.presaleGoalTarget = Number(p.presaleGoalTarget) > 0 ? Number(p.presaleGoalTarget) : ''
         form.presaleFixedDateType = p.presaleFixedDateType || PRESALE_FIXED_DATE_TYPES.MONTH_START
         form.presaleFixedDateValue = p.presaleFixedDateValue || ''
+        form.presalePaidCount = Number(p.presalePaidCount) || 0
+        form.stockAdjustDelta = 0
+        form.presalePaidAdjustDelta = 0
         if (!form.specs) form.specs = []
         if (!form.detailImages) form.detailImages = []
     } else {
@@ -323,7 +362,10 @@ watch(showCropModal, (v) => {
 })
 
 watch(() => form.presaleMode, (mode) => {
-    if (mode !== PRESALE_MODES.GOAL) form.presaleGoalTarget = ''
+    if (mode !== PRESALE_MODES.GOAL) {
+        form.presaleGoalTarget = ''
+        form.presalePaidAdjustDelta = 0
+    }
     if (mode !== PRESALE_MODES.FIXED) {
         form.presaleFixedDateType = PRESALE_FIXED_DATE_TYPES.MONTH_START
         form.presaleFixedDateValue = ''
@@ -543,6 +585,12 @@ const hasDiscount = (product) => {
 }
 
 const getDisplayPrice = (product) => (hasDiscount(product) ? Number(product.discountPrice) : Number(product.price))
+const parseAdjustDelta = (value) => {
+    if (value === '' || value === null || value === undefined) return 0
+    const numeric = Number(value)
+    if (!Number.isInteger(numeric)) return null
+    return numeric
+}
 const getPresaleModeLabel = (product) => {
     const mode = String(product?.presaleMode || '').trim().toLowerCase()
     if (mode === PRESALE_MODES.GOAL) return '达标预售'
@@ -564,6 +612,19 @@ const getPresaleSummary = (product) => {
 
 const save = async () => {
     const payload = { ...form }
+    const stockAdjustDelta = isEdit.value ? parseAdjustDelta(payload.stockAdjustDelta) : 0
+    const presalePaidAdjustDelta = isEdit.value ? parseAdjustDelta(payload.presalePaidAdjustDelta) : 0
+    if (isEdit.value && (stockAdjustDelta === null || presalePaidAdjustDelta === null)) {
+        store.showNotification('调整数量必须为整数')
+        return
+    }
+
+    delete payload.presalePaidCount
+    delete payload.stockAdjustDelta
+    delete payload.presalePaidAdjustDelta
+    delete payload.presalePaidCountBase
+    delete payload.presalePaidOffset
+
     if (payload.discountPrice === '' || payload.discountPrice === null || payload.discountPrice === undefined) {
         payload.discountPrice = null
     } else {
@@ -622,10 +683,18 @@ const save = async () => {
         payload.presaleFixedDateType = ''
         payload.presaleFixedDateValue = ''
     }
+    const effectivePresalePaidAdjustDelta = payload.presaleMode === PRESALE_MODES.GOAL ? presalePaidAdjustDelta : 0
 
     let success = false
     if (isEdit.value) {
+        delete payload.stock
         success = await store.updateProduct(form.id, payload)
+        if (success && (stockAdjustDelta !== 0 || effectivePresalePaidAdjustDelta !== 0)) {
+            success = await store.adjustProductMetrics(form.id, {
+                stockDelta: stockAdjustDelta,
+                presalePaidDelta: effectivePresalePaidAdjustDelta
+            })
+        }
     } else {
         success = await store.addProduct(payload)
     }
@@ -651,6 +720,20 @@ const save = async () => {
     display: flex;
     gap: 1rem;
     align-items: center;
+}
+.input-readonly {
+    background: #f8fafc;
+    color: #64748b;
+}
+.adjust-current-text {
+    margin-top: 0.35rem;
+    font-size: 0.75rem;
+    color: #64748b;
+}
+.presale-config-wrap .form-input:disabled {
+    background: #f1f5f9;
+    color: #94a3b8;
+    cursor: not-allowed;
 }
 
 /* 商品行拖拽 */

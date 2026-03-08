@@ -36,7 +36,7 @@
                         <span :style="{ width: `${getPresaleProgress(item).percent}%` }"></span>
                     </div>
                     <p class="card-presale-tip">
-                        {{ getPresaleProgress(item).reached ? '已达标，进入开做阶段' : '已支付订单持续累计中' }}
+                        {{ getPresaleProgress(item).reached ? '已达标' : '订单持续累计中' }}
                     </p>
                 </div>
                 <div v-else-if="item.presaleMode === PRESALE_MODES.FIXED" class="card-presale-box">

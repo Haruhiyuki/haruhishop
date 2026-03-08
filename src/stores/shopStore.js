@@ -5,6 +5,7 @@ import { isAdminPagePath, resolveApiPath, resolveAppPath } from '@/utils/runtime
 
 // 使用 Vite 代理路径
 const API_URL = resolveApiPath('/products')
+const ADMIN_PRODUCT_ADJUST_URL = resolveApiPath('/admin/products')
 const ORDER_URL = resolveApiPath('/orders')
 const UPLOAD_URL = resolveApiPath('/upload')
 const ADMIN_LOGIN_URL = resolveApiPath('/admin/login')
@@ -67,6 +68,12 @@ const normalizeProduct = (product = {}) => {
     const presalePaidCount = Number.isFinite(presalePaidCountRaw) && presalePaidCountRaw > 0
         ? Math.floor(presalePaidCountRaw)
         : 0
+    const presalePaidCountBaseRaw = Number(product.presalePaidCountBase)
+    const presalePaidCountBase = Number.isFinite(presalePaidCountBaseRaw) && presalePaidCountBaseRaw > 0
+        ? Math.floor(presalePaidCountBaseRaw)
+        : 0
+    const presalePaidOffsetRaw = Number.parseInt(product.presalePaidOffset, 10)
+    const presalePaidOffset = Number.isInteger(presalePaidOffsetRaw) ? presalePaidOffsetRaw : 0
 
     return {
         ...product,
@@ -78,6 +85,8 @@ const normalizeProduct = (product = {}) => {
         presaleGoalTarget: presaleMode === PRESALE_MODES.GOAL ? presaleGoalTarget : 0,
         presaleFixedDateType: presaleMode === PRESALE_MODES.FIXED ? presaleFixedDateType : '',
         presaleFixedDateValue: presaleMode === PRESALE_MODES.FIXED ? presaleFixedDateValue : '',
+        presalePaidCountBase,
+        presalePaidOffset,
         presalePaidCount
     }
 }
@@ -738,6 +747,53 @@ export const useShopStore = () => {
         return false
     }
 
+    const adjustProductMetrics = async (id, { stockDelta = 0, presalePaidDelta = 0 } = {}) => {
+        if (!ensureAdminAuth()) return false
+        const normalizeDelta = (value) => {
+            if (value === '' || value === null || value === undefined) return 0
+            const num = Number(value)
+            if (!Number.isInteger(num)) return null
+            return num
+        }
+        const cleanStockDelta = normalizeDelta(stockDelta)
+        const cleanPresalePaidDelta = normalizeDelta(presalePaidDelta)
+        if (cleanStockDelta === null || cleanPresalePaidDelta === null) {
+            showNotification('调整数量必须是整数')
+            return false
+        }
+        if (cleanStockDelta === 0 && cleanPresalePaidDelta === 0) {
+            showNotification('请至少调整一项数量')
+            return false
+        }
+
+        try {
+            const res = await fetch(`${ADMIN_PRODUCT_ADJUST_URL}/${id}/adjust`, {
+                method: 'PUT',
+                headers: buildAdminAuthHeaders({ 'Content-Type': 'application/json' }),
+                body: JSON.stringify({
+                    stockDelta: cleanStockDelta,
+                    presalePaidDelta: cleanPresalePaidDelta
+                })
+            })
+            const data = await res.json().catch(() => ({}))
+            if (res.status === 401) {
+                handleAdminUnauthorized()
+                return false
+            }
+            if (!res.ok) {
+                showNotification(data.error || '调整失败')
+                return false
+            }
+
+            await fetchProducts()
+            showNotification('库存/预售进度已调整')
+            return true
+        } catch (e) {
+            showNotification('调整失败')
+            return false
+        }
+    }
+
     const deleteProduct = async (id) => {
         if (!ensureAdminAuth()) return
         if (!confirm('确定删除?')) return
@@ -975,7 +1031,7 @@ export const useShopStore = () => {
         state, cartCount, cartTotal, shippingFee, finalTotal,
         freeShippingThreshold: FREE_SHIPPING_THRESHOLD,
         setProductType, addToCart, removeFromCart, clearCart, showNotification, setOrder,
-        fetchProducts, addProduct, updateProduct, deleteProduct, reorderProducts, uploadImage,
+        fetchProducts, addProduct, updateProduct, adjustProductMetrics, deleteProduct, reorderProducts, uploadImage,
         createOrderBackend, submitOrderPayment,
         fetchAdminOrders, updateOrderStatus, updateAdminOrderContact, deleteAdminOrder,
         previewCoupon, fetchAdminCoupons, createCouponBatch, updateCouponStatus, deleteCoupon,

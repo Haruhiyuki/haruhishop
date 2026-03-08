@@ -43,7 +43,8 @@ db.serialize(() => {
         presaleMode TEXT DEFAULT 'none',
         presaleGoalTarget INTEGER DEFAULT 0,
         presaleFixedDateType TEXT,
-        presaleFixedDateValue TEXT
+        presaleFixedDateValue TEXT,
+        presalePaidOffset INTEGER DEFAULT 0
     )`);
 
     // [修改] 升级订单表，增加地址详情字段
@@ -163,6 +164,7 @@ db.serialize(() => {
     ensureColumn('products', 'presaleGoalTarget', 'INTEGER DEFAULT 0');
     ensureColumn('products', 'presaleFixedDateType', 'TEXT');
     ensureColumn('products', 'presaleFixedDateValue', 'TEXT');
+    ensureColumn('products', 'presalePaidOffset', 'INTEGER DEFAULT 0');
 });
 
 module.exports = db;
