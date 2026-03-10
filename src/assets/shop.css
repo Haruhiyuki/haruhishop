@@ -1848,6 +1848,7 @@ textarea.input-field {
 
     /* Filter buttons: horizontal scroll, hide scrollbar */
     .custom-btn-group {
+        display: flex;
         overflow-x: auto;
         -webkit-overflow-scrolling: touch;
         flex-wrap: nowrap;
