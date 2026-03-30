@@ -39,7 +39,7 @@
 
 ```bash
 # 克隆仓库
-git clone https://github.com/your-username/haruhishop.git
+git clone https://github.com/Haruhiyuki/haruhishop.git
 cd haruhishop
 
 # 安装依赖
