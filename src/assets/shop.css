@@ -1647,23 +1647,102 @@ textarea.input-field {
         margin-bottom: 1.25rem;
     }
 
-    /* Product grid: tighter gap on mobile */
+    /* Product grid: 2-column compact layout on mobile */
     .product-grid {
-        gap: 1rem;
+        gap: 0.6rem;
+        grid-template-columns: repeat(2, 1fr);
     }
 
     .card-image-wrapper {
         height: auto;
-        aspect-ratio: 1 / 1.12;
-    }
-
-    .card-title {
-        width: 68%;
-        font-size: 1rem;
+        aspect-ratio: 1 / 1;
     }
 
     .card-body {
-        padding: 0.75rem;
+        padding: 0.55rem 0.6rem;
+    }
+
+    .card-title-row {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 0.15rem;
+        margin-bottom: 0.3rem;
+    }
+
+    .card-title {
+        width: 100%;
+        font-size: 0.85rem;
+        line-height: 1.3;
+    }
+
+    .card-price-wrap {
+        flex-direction: row;
+        align-items: baseline;
+        justify-content: flex-start;
+        gap: 0.35rem;
+    }
+
+    .card-price {
+        font-size: 0.95rem;
+    }
+
+    .card-price-original {
+        font-size: 0.65rem;
+    }
+
+    .card-desc {
+        font-size: 0.68rem;
+        line-height: 1.4;
+        min-height: 0;
+        margin-bottom: 0.4rem;
+        -webkit-line-clamp: 1;
+    }
+
+    .card-presale-box {
+        margin-bottom: 0.4rem;
+        border-radius: 8px;
+    }
+
+    .card-presale-head {
+        gap: 0.3rem;
+    }
+
+    .presale-chip {
+        font-size: 0.6rem;
+        padding: 1px 6px;
+    }
+
+    .card-presale-count {
+        font-size: 0.65rem;
+    }
+
+    .card-presale-track {
+        height: 5px;
+        margin-top: 0.3rem;
+    }
+
+    .card-presale-tip {
+        font-size: 0.62rem;
+        margin-top: 0.3rem;
+        line-height: 1.3;
+    }
+
+    .card-footer {
+        gap: 0.3rem;
+    }
+
+    .badge-tag {
+        font-size: 0.62rem;
+        padding: 1px 6px;
+    }
+
+    .stock-label {
+        font-size: 0.62rem;
+    }
+
+    /* Hover overlay can't be triggered on touch — hide to prevent flicker on tap */
+    .card-overlay {
+        display: none;
     }
 
     /* Detail page */
